@@ -172,8 +172,14 @@ internal class PlaylistAdapter(
                 playlist.name,
                 playlist.tracks.size,
             )
+            val isLikedSongs = playlist.name.equals(context.getString(R.string.liked_songs), ignoreCase = true)
             val cover = row.cover
-            if (cover != null) {
+            if (isLikedSongs) {
+                artwork.setImageDrawable(null)
+                artwork.background = likedSongsGradient(context.dp(8).toFloat())
+                artwork.contentDescription = playlist.name
+            } else if (cover != null) {
+                artwork.background = roundedBackground(COLOR_SURFACE, context.dp(8))
                 val bitmap = cover.artwork
                 if (bitmap != null) {
                     artwork.setImageBitmap(bitmap)
@@ -187,6 +193,7 @@ internal class PlaylistAdapter(
                     cover.artist,
                 )
             } else {
+                artwork.background = roundedBackground(COLOR_SURFACE, context.dp(8))
                 artwork.setImageResource(android.R.drawable.ic_media_play)
                 artwork.contentDescription = null
             }

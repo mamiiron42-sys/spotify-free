@@ -269,4 +269,21 @@
     <string name="unknown_error">Unknown error</string>
     <string name="action_cancel">Cancel</string>
     <string name="action_retry">Retry</string>
+    <string name="home_greeting_morning">Good morning</string>
+    <string name="home_greeting_afternoon">Good afternoon</string>
+    <string name="home_greeting_evening">Good evening</string>
+    <string name="search_browse_all">Browse all</string>
+    <string name="search_hint_spotify">What do you want to listen to?</string>
+    <string name="now_playing_from_playlist">PLAYING FROM PLAYLIST</string>
+    <string name="now_playing_from_library">PLAYING FROM YOUR LIBRARY</string>
+    <string name="now_playing_collapse">Collapse player</string>
+    <string name="now_playing_like">Save to Liked Songs</string>
+    <string name="now_playing_unlike">Remove from Liked Songs</string>
+    <string name="library_filter_playlists">Playlists</string>
+    <string name="library_filter_tracks">Songs</string>
+    <string name="library_liked_songs_subtitle">Pinned · %1$d songs</string>
+    <string name="liked_songs_empty">No liked songs yet</string>
+    <string name="library_sort_menu">Change library sort order</string>
+    <string name="playlist_row_accessibility">Playlist %1$s, %2$d songs</string>
+    <string name="playlist_menu_accessibility">Options for playlist %1$s</string>
 </resources>

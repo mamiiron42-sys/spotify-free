@@ -9,6 +9,7 @@ import android.view.View
 import android.view.animation.OvershootInterpolator
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.TextView
 
 /**
  * Programmatic-UI primitives shared by `MainActivity` and the list adapters.
@@ -23,21 +24,23 @@ internal const val WRAP = LinearLayout.LayoutParams.WRAP_CONTENT
 internal const val BUTTON_PRESS_MS = 110L
 internal const val SUCCESS_ANIMATION_MS = 260L
 
-internal val COLOR_BACKGROUND = Color.rgb(17, 20, 32)
-internal val COLOR_NAVIGATION = Color.rgb(17, 20, 32)
-internal val COLOR_SURFACE = Color.rgb(35, 41, 61)
-internal val COLOR_CARD = Color.rgb(26, 31, 48)
-internal val COLOR_PLAYER_BAR = Color.rgb(38, 45, 67)
-internal val COLOR_TEXT = Color.rgb(247, 247, 255)
-internal val COLOR_MUTED = Color.rgb(183, 190, 211)
-internal val COLOR_ACCENT = Color.rgb(93, 230, 190)
-internal val COLOR_ACCENT_SECONDARY = Color.rgb(193, 164, 255)
-internal val COLOR_ACCENT_WARM = Color.rgb(255, 190, 122)
-internal val COLOR_ACCENT_BLUE = Color.rgb(112, 186, 255)
-internal val COLOR_ACCENT_PINK = Color.rgb(255, 137, 181)
-internal val COLOR_HERO_START = Color.rgb(89, 52, 180)
-internal val COLOR_HERO_MIDDLE = Color.rgb(126, 67, 189)
-internal val COLOR_HERO_END = Color.rgb(34, 162, 160)
+// Spotify Signature Palette
+internal val COLOR_BACKGROUND = Color.rgb(18, 18, 18) // #121212 Spotify Black
+internal val COLOR_NAVIGATION = Color.rgb(18, 18, 18) // #121212
+internal val COLOR_SURFACE = Color.rgb(36, 36, 36) // #242424 Spotify elevated dark surface
+internal val COLOR_CARD = Color.rgb(24, 24, 24) // #181818 Spotify card background
+internal val COLOR_PLAYER_BAR = Color.rgb(33, 33, 33) // #212121 Spotify miniplayer background
+internal val COLOR_TEXT = Color.rgb(255, 255, 255) // #FFFFFF Pure White
+internal val COLOR_MUTED = Color.rgb(179, 179, 179) // #B3B3B3 Spotify light gray
+internal val COLOR_ACCENT = Color.rgb(29, 185, 84) // #1DB954 Spotify Signature Green
+internal val COLOR_ACCENT_BRIGHT = Color.rgb(30, 215, 96) // #1ED760
+internal val COLOR_ACCENT_SECONDARY = Color.rgb(80, 56, 160) // #5038A0 Liked Songs Purple
+internal val COLOR_ACCENT_WARM = Color.rgb(255, 100, 55)
+internal val COLOR_ACCENT_BLUE = Color.rgb(80, 155, 245)
+internal val COLOR_ACCENT_PINK = Color.rgb(235, 30, 50)
+internal val COLOR_HERO_START = Color.rgb(29, 185, 84)
+internal val COLOR_HERO_MIDDLE = Color.rgb(18, 90, 45)
+internal val COLOR_HERO_END = Color.rgb(18, 18, 18)
 internal val COLOR_HERO_TEXT = Color.WHITE
 
 internal fun Context.dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
@@ -46,15 +49,21 @@ internal fun roundedBackground(color: Int, radius: Int) = GradientDrawable().app
     setColor(color); cornerRadius = radius.toFloat()
 }
 
+internal fun likedSongsGradient(radiusPx: Float = 0f) = GradientDrawable(
+    GradientDrawable.Orientation.TL_BR,
+    intArrayOf(Color.rgb(80, 56, 160), Color.rgb(139, 92, 246)),
+).apply { cornerRadius = radiusPx }
+
 internal fun animationsEnabled(): Boolean = ValueAnimator.areAnimatorsEnabled()
 
 internal fun Context.styleActionButton(button: Button, primary: Boolean) {
     button.isAllCaps = false
-    button.textSize = 14f
-    button.setTextColor(if (primary) COLOR_BACKGROUND else COLOR_TEXT)
-    button.background = roundedBackground(if (primary) COLOR_ACCENT else COLOR_SURFACE, dp(12))
-    button.setPadding(dp(12), 0, dp(12), 0)
-    button.minHeight = dp(48)
+    button.textSize = 13f
+    button.setTypeface(null, android.graphics.Typeface.BOLD)
+    button.setTextColor(if (primary) Color.BLACK else COLOR_TEXT)
+    button.background = roundedBackground(if (primary) COLOR_ACCENT else COLOR_SURFACE, dp(24))
+    button.setPadding(dp(16), 0, dp(16), 0)
+    button.minHeight = dp(44)
     button.minWidth = 0
     button.stateListAnimator = null
     button.setOnTouchListener { view, event ->
@@ -75,6 +84,15 @@ internal fun Context.styleActionButton(button: Button, primary: Boolean) {
         }
         false
     }
+}
+
+internal fun Context.stylePillChip(chip: TextView, selected: Boolean) {
+    chip.isAllCaps = false
+    chip.textSize = 13f
+    chip.setTypeface(null, if (selected) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL)
+    chip.setTextColor(if (selected) Color.BLACK else COLOR_TEXT)
+    chip.background = roundedBackground(if (selected) COLOR_ACCENT else COLOR_SURFACE, dp(20))
+    chip.setPadding(dp(16), dp(8), dp(16), dp(8))
 }
 
 /** Overshoot pop that draws the eye to a row whose state just changed. */

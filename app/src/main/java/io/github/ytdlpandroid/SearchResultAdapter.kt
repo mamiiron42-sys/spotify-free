@@ -1,5 +1,6 @@
 package io.github.ytdlpandroid
 
+import android.graphics.Color
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -271,6 +272,8 @@ internal class SearchResultAdapter(
             when (status) {
                 SearchDownloadStatus.COMPLETE -> {
                     downloadButton.text = "✓"
+                    downloadButton.setTextColor(COLOR_ACCENT)
+                    downloadButton.background = roundedBackground(Color.rgb(20, 50, 30), context.dp(22))
                     downloadButton.contentDescription = context.getString(
                         R.string.download_complete_accessibility,
                         result.title,
@@ -282,6 +285,8 @@ internal class SearchResultAdapter(
 
                 SearchDownloadStatus.PAUSED -> {
                     downloadButton.text = "Ⅱ"
+                    downloadButton.setTextColor(COLOR_TEXT)
+                    downloadButton.background = roundedBackground(COLOR_SURFACE, context.dp(22))
                     downloadButton.contentDescription = context.getString(
                         R.string.download_paused_accessibility,
                         result.title,
@@ -295,6 +300,8 @@ internal class SearchResultAdapter(
 
                 SearchDownloadStatus.RETRYABLE -> {
                     downloadButton.text = "↻"
+                    downloadButton.setTextColor(COLOR_ACCENT_WARM)
+                    downloadButton.background = roundedBackground(COLOR_SURFACE, context.dp(22))
                     downloadButton.contentDescription = context.getString(
                         R.string.retry_download_accessibility,
                         result.title,
@@ -307,6 +314,8 @@ internal class SearchResultAdapter(
                 SearchDownloadStatus.NONE, null,
                 -> {
                     downloadButton.text = "↓"
+                    downloadButton.setTextColor(COLOR_TEXT)
+                    downloadButton.background = roundedBackground(COLOR_SURFACE, context.dp(22))
                     downloadButton.contentDescription =
                         context.getString(R.string.download_track_named, result.title)
                     downloadButton.isClickable = true
