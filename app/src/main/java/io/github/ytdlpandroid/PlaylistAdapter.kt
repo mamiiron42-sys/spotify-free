@@ -139,11 +139,14 @@ internal class PlaylistAdapter(
         )
         header.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f))
         header.addView(
-            Button(context).apply {
-                tag = TAG_MENU
-                text = "⋮"
-                context.styleActionButton(this, false)
-            },
+            with(context) {
+                iconButton(
+                    iconRes = R.drawable.ic_more_vert,
+                    description = getString(R.string.more_options),
+                    tint = COLOR_MUTED,
+                    sizeDp = 44,
+                )
+            }.apply { tag = TAG_MENU },
             LinearLayout.LayoutParams(context.dp(44), context.dp(44)).apply {
                 marginStart = context.dp(4)
             },
@@ -160,7 +163,7 @@ internal class PlaylistAdapter(
         private val artwork = card.findViewWithTag<ImageView>(TAG_ARTWORK)
         private val name = card.findViewWithTag<TextView>(TAG_NAME)
         private val count = card.findViewWithTag<TextView>(TAG_COUNT)
-        private val menuButton = card.findViewWithTag<Button>(TAG_MENU)
+        private val menuButton = card.findViewWithTag<ImageView>(TAG_MENU)
 
         fun bind(row: PlaylistRow.Playlist) {
             val playlist = row.playlist

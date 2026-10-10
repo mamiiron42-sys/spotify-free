@@ -189,18 +189,26 @@ internal class SearchResultAdapter(
         }
         actions.addView(View(context), LinearLayout.LayoutParams(0, context.dp(44), 1f))
         actions.addView(
-            Button(context).apply {
-                tag = TAG_MENU
-                text = "⋮"
-                context.styleActionButton(this, false)
-            },
+            with(context) {
+                iconButton(
+                    iconRes = R.drawable.ic_more_vert,
+                    description = getString(R.string.more_options),
+                    tint = COLOR_MUTED,
+                    sizeDp = 44,
+                )
+            }.apply { tag = TAG_MENU },
             LinearLayout.LayoutParams(context.dp(44), context.dp(44)).apply {
                 marginEnd = context.dp(3)
             },
         )
-        val downloadButton = Button(context).apply {
-            text = "↓"
-            context.styleActionButton(this, false)
+        val downloadButton = with(context) {
+            iconButton(
+                iconRes = R.drawable.ic_download,
+                description = getString(R.string.download_track),
+                fill = COLOR_SURFACE,
+                tint = COLOR_TEXT,
+                sizeDp = 44,
+            ) {}
         }
         val downloadSpinner = ProgressBar(
             context,
@@ -236,10 +244,10 @@ internal class SearchResultAdapter(
         private val artwork = card.findViewWithTag<ImageView>(TAG_ARTWORK)
         private val title = card.findViewWithTag<TextView>(TAG_TITLE)
         private val uploader = card.findViewWithTag<TextView>(TAG_UPLOADER)
-        private val menuButton = card.findViewWithTag<Button>(TAG_MENU)
+        private val menuButton = card.findViewWithTag<ImageView>(TAG_MENU)
         private val actions = card.getChildAt(card.childCount - 1) as LinearLayout
         private val downloadButton =
-            (actions.getChildAt(actions.childCount - 1) as FrameLayout).getChildAt(0) as Button
+            (actions.getChildAt(actions.childCount - 1) as FrameLayout).getChildAt(0) as ImageView
         private val downloadSpinner =
             (actions.getChildAt(actions.childCount - 1) as FrameLayout).getChildAt(1) as ProgressBar
 
@@ -271,8 +279,8 @@ internal class SearchResultAdapter(
             downloadButton.visibility = if (active) View.GONE else View.VISIBLE
             when (status) {
                 SearchDownloadStatus.COMPLETE -> {
-                    downloadButton.text = "✓"
-                    downloadButton.setTextColor(COLOR_ACCENT)
+                    downloadButton.setImageResource(R.drawable.ic_check)
+                    downloadButton.tint(COLOR_ACCENT)
                     downloadButton.background = roundedBackground(Color.rgb(20, 50, 30), context.dp(22))
                     downloadButton.contentDescription = context.getString(
                         R.string.download_complete_accessibility,
@@ -284,8 +292,8 @@ internal class SearchResultAdapter(
                 }
 
                 SearchDownloadStatus.PAUSED -> {
-                    downloadButton.text = "Ⅱ"
-                    downloadButton.setTextColor(COLOR_TEXT)
+                    downloadButton.setImageResource(R.drawable.ic_pause)
+                    downloadButton.tint(COLOR_TEXT)
                     downloadButton.background = roundedBackground(COLOR_SURFACE, context.dp(22))
                     downloadButton.contentDescription = context.getString(
                         R.string.download_paused_accessibility,
@@ -299,8 +307,8 @@ internal class SearchResultAdapter(
                 }
 
                 SearchDownloadStatus.RETRYABLE -> {
-                    downloadButton.text = "↻"
-                    downloadButton.setTextColor(COLOR_ACCENT_WARM)
+                    downloadButton.setImageResource(R.drawable.ic_repeat)
+                    downloadButton.tint(COLOR_ACCENT_WARM)
                     downloadButton.background = roundedBackground(COLOR_SURFACE, context.dp(22))
                     downloadButton.contentDescription = context.getString(
                         R.string.retry_download_accessibility,
@@ -313,8 +321,8 @@ internal class SearchResultAdapter(
                 SearchDownloadStatus.DOWNLOADING, SearchDownloadStatus.QUEUED,
                 SearchDownloadStatus.NONE, null,
                 -> {
-                    downloadButton.text = "↓"
-                    downloadButton.setTextColor(COLOR_TEXT)
+                    downloadButton.setImageResource(R.drawable.ic_download)
+                    downloadButton.tint(COLOR_TEXT)
                     downloadButton.background = roundedBackground(COLOR_SURFACE, context.dp(22))
                     downloadButton.contentDescription =
                         context.getString(R.string.download_track_named, result.title)

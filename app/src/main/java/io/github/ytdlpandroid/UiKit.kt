@@ -8,6 +8,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.animation.OvershootInterpolator
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 
@@ -55,6 +56,62 @@ internal fun likedSongsGradient(radiusPx: Float = 0f) = GradientDrawable(
 ).apply { cornerRadius = radiusPx }
 
 internal fun animationsEnabled(): Boolean = ValueAnimator.areAnimatorsEnabled()
+
+/** Squircle-free Spotify look: flat cards, generous radii, no shadows on small surfaces. */
+internal fun verticalGradient(colors: IntArray, cornerRadiusPx: Float = 0f) = GradientDrawable(
+    GradientDrawable.Orientation.TOP_BOTTOM,
+    colors,
+).apply { cornerRadius = cornerRadiusPx }
+
+/**
+ * Tintable vector icon at [sizeDp]. Icons are white in the drawables so a single
+ * `imageTintList` call produces the active/inactive nav or control colour.
+ */
+internal fun Context.iconView(
+    iconRes: Int,
+    sizeDp: Int,
+    tint: Int = COLOR_TEXT,
+): ImageView = ImageView(this).apply {
+    setImageResource(iconRes)
+    imageTintList = android.content.res.ColorStateList.valueOf(tint)
+    scaleType = ImageView.ScaleType.FIT_CENTER
+    layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
+}
+
+/**
+ * Circular icon button used for player transport controls and row actions.
+ * Returns an [ImageView] so callers swap the icon and tint when state changes.
+ */
+internal fun Context.iconButton(
+    iconRes: Int,
+    description: String,
+    fill: Int = Color.TRANSPARENT,
+    tint: Int = COLOR_TEXT,
+    sizeDp: Int = 48,
+    insetDp: Int = 11,
+    onClick: () -> Unit = {},
+): ImageView = ImageView(this).apply {
+    setImageResource(iconRes)
+    imageTintList = android.content.res.ColorStateList.valueOf(tint)
+    contentDescription = description
+    scaleType = ImageView.ScaleType.FIT_CENTER
+    val inset = dp(insetDp)
+    setPadding(inset, inset, inset, inset)
+    background = GradientDrawable().apply {
+        shape = GradientDrawable.OVAL
+        setColor(fill)
+    }
+    isClickable = true
+    isFocusable = true
+    stateListAnimator = null
+    setOnClickListener { onClick() }
+    layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
+}
+
+/** Re-tints an icon view in place, e.g. when a control becomes active. */
+internal fun ImageView.tint(color: Int) {
+    imageTintList = android.content.res.ColorStateList.valueOf(color)
+}
 
 internal fun Context.styleActionButton(button: Button, primary: Boolean) {
     button.isAllCaps = false

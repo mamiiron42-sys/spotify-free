@@ -155,7 +155,7 @@ class MainActivity :
     private lateinit var downloadHistoryList: GridLayout
     private lateinit var libraryRecentHistory: GridLayout
     private lateinit var libraryFilterButton: Button
-    private lateinit var librarySortButton: Button
+    private lateinit var librarySortButton: ImageView
     private lateinit var libraryTrackHeading: TextView
     private lateinit var libraryPlayAllButton: Button
     private lateinit var librarySearch: EditText
@@ -182,9 +182,9 @@ class MainActivity :
     private lateinit var playerPosition: TextView
     private lateinit var playerDuration: TextView
     private lateinit var playerSeek: SeekBar
-    private lateinit var playButton: Button
-    private lateinit var shuffleButton: Button
-    private lateinit var repeatButton: Button
+    private lateinit var playButton: ImageView
+    private lateinit var shuffleButton: ImageView
+    private lateinit var repeatButton: ImageView
     private lateinit var playerStatus: TextView
     private lateinit var speedSpinner: Spinner
     private lateinit var sleepTimerButton: Button
@@ -194,10 +194,11 @@ class MainActivity :
     private lateinit var nowPlayingArtwork: ImageView
     private lateinit var nowPlayingTitle: TextView
     private lateinit var nowPlayingArtist: TextView
-    private lateinit var nowPlayingButton: Button
-    private lateinit var nowPlayingLikeButton: Button
+    private lateinit var nowPlayingButton: ImageView
+    private lateinit var nowPlayingNextButton: ImageView
+    private lateinit var nowPlayingLikeButton: ImageView
     private lateinit var nowPlayingProgress: ProgressBar
-    private lateinit var playerLikeButton: Button
+    private lateinit var playerLikeButton: ImageView
     private lateinit var playerHeaderTitle: TextView
     private lateinit var playerHeaderSubtitle: TextView
     private var searchBrowseSection: View? = null
@@ -440,32 +441,45 @@ class MainActivity :
         nowPlayingLabels.addView(nowPlayingArtist)
         nowPlayingContent.addView(nowPlayingLabels, LinearLayout.LayoutParams(0, WRAP, 1f))
 
-        nowPlayingLikeButton = Button(this).apply {
-            text = "♡"
-            textSize = 18f
-            contentDescription = getString(R.string.now_playing_like)
-            background = null
-            setTextColor(COLOR_MUTED)
-            setOnClickListener {
-                currentPlaybackTrack?.let { track ->
-                    lifecycleScope.launch {
-                        val likedPlaylist = playlistViewModel.likedPlaylistNamed(getString(R.string.liked_songs))
-                        toggleTrackLike(track, likedPlaylist)
-                    }
+        nowPlayingLikeButton = iconButton(
+            iconRes = R.drawable.ic_heart_outline,
+            description = getString(R.string.now_playing_like),
+            tint = COLOR_MUTED,
+            sizeDp = 44,
+        ) {
+            currentPlaybackTrack?.let { track ->
+                lifecycleScope.launch {
+                    val likedPlaylist = playlistViewModel.likedPlaylistNamed(getString(R.string.liked_songs))
+                    toggleTrackLike(track, likedPlaylist)
                 }
             }
         }
-        nowPlayingContent.addView(nowPlayingLikeButton, LinearLayout.LayoutParams(dp(40), dp(44)))
+        nowPlayingContent.addView(
+            nowPlayingLikeButton,
+            LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(2) },
+        )
 
-        nowPlayingButton = Button(this).apply {
-            text = "▶"
-            textSize = 18f
-            contentDescription = getString(R.string.play)
-            background = null
-            setTextColor(COLOR_TEXT)
-            setOnClickListener { togglePlayback() }
-        }
-        nowPlayingContent.addView(nowPlayingButton, LinearLayout.LayoutParams(dp(44), dp(44)))
+        nowPlayingNextButton = iconButton(
+            iconRes = R.drawable.ic_skip_next,
+            description = getString(R.string.next),
+            tint = COLOR_MUTED,
+            sizeDp = 44,
+        ) { playNext() }
+        nowPlayingContent.addView(
+            nowPlayingNextButton,
+            LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(2) },
+        )
+
+        nowPlayingButton = iconButton(
+            iconRes = R.drawable.ic_play,
+            description = getString(R.string.play),
+            tint = COLOR_TEXT,
+            sizeDp = 44,
+        ) { togglePlayback() }
+        nowPlayingContent.addView(
+            nowPlayingButton,
+            LinearLayout.LayoutParams(dp(44), dp(44)),
+        )
         nowPlayingBar.addView(nowPlayingContent, matchWidth())
 
         nowPlayingProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -499,22 +513,31 @@ class MainActivity :
                     showTab(label)
                 }
             }
-            val icon = TextView(this).apply {
-                text = navigationGlyph(label)
-                textSize = 21f
-                gravity = Gravity.CENTER
-                setTextColor(if (label == currentTab) COLOR_TEXT else COLOR_MUTED)
-            }
+            val icon = iconView(
+                iconRes = if (label == currentTab) navIconFilled(label) else navIconOutline(label),
+                sizeDp = 25,
+                tint = if (label == currentTab) COLOR_TEXT else COLOR_MUTED,
+            )
             val title = TextView(this).apply {
                 text = getString(label)
                 textSize = 11f
                 gravity = Gravity.CENTER
-                setTextColor(if (label == currentTab) COLOR_TEXT else COLOR_MUTED)
+                setTextColor(COLOR_MUTED)
+                setPadding(0, dp(3), 0, 0)
             }
             item.addView(icon)
             item.addView(title)
-            item.isSelected = label == currentTab
-            navigation.addView(item, LinearLayout.LayoutParams(0, dp(54), 1f))
+            // Spotify marks the active tab with a small green dot rather than a filled pill.
+            val indicator = View(this).apply {
+                background = roundedBackground(COLOR_ACCENT, dp(10))
+                visibility = if (label == currentTab) View.VISIBLE else View.GONE
+            }
+            indicator.tag = "nav-indicator"
+            item.addView(indicator, LinearLayout.LayoutParams(dp(4), dp(4)).apply {
+                topMargin = dp(4)
+                gravity = Gravity.CENTER_HORIZONTAL
+            })
+            navigation.addView(item, LinearLayout.LayoutParams(0, dp(58), 1f))
         }
         screen.addView(nowPlayingBar, LinearLayout.LayoutParams(MATCH, WRAP).apply {
             leftMargin = dp(8)
@@ -548,10 +571,16 @@ class MainActivity :
     private fun scrollContent(scroll: ScrollView) =
         (scroll.getChildAt(0) as FrameLayout).getChildAt(0) as LinearLayout
 
-    private fun navigationGlyph(label: Int): String = when (label) {
-        R.string.nav_home -> "⌂"
-        R.string.nav_search -> "⌕"
-        else -> "▤"
+    private fun navIconFilled(label: Int): Int = when (label) {
+        R.string.nav_search -> R.drawable.ic_search_filled
+        R.string.nav_library -> R.drawable.ic_library_filled
+        else -> R.drawable.ic_home_filled
+    }
+
+    private fun navIconOutline(label: Int): Int = when (label) {
+        R.string.nav_search -> R.drawable.ic_search_outline
+        R.string.nav_library -> R.drawable.ic_library_outline
+        else -> R.drawable.ic_home_outline
     }
 
     private fun searchGridColumnCount(): Int {
@@ -880,12 +909,13 @@ class MainActivity :
             ellipsize = android.text.TextUtils.TruncateAt.END
             setTextColor(COLOR_MUTED)
         }, LinearLayout.LayoutParams(0, WRAP, 1f))
-        artistLine.addView(Button(this).apply {
-            text = "⋮"
-            contentDescription = getString(R.string.track_actions_accessibility, track.title)
-            styleActionButton(this, false)
-            setOnClickListener { showTrackMenu(track, this, historyEntryId) }
-        }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(3) })
+        val overflowButton = iconButton(
+            iconRes = R.drawable.ic_more_vert,
+            description = getString(R.string.track_actions_accessibility, track.title),
+            tint = COLOR_MUTED,
+            sizeDp = 48,
+        ) { showTrackMenu(track, card, historyEntryId) }
+        artistLine.addView(overflowButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(3) })
         card.addView(artistLine, matchWidth())
         val params = GridLayout.LayoutParams(
             GridLayout.spec(cellIndex / columns),
@@ -973,19 +1003,22 @@ class MainActivity :
                 playlistViewModel.likedPlaylistNamed(getString(R.string.liked_songs))
             }.getOrNull()
             val isLiked = likedPlaylist?.tracks?.contains(track.uri.toString()) == true
+            val likeDescription = getString(
+                if (isLiked) R.string.now_playing_unlike else R.string.now_playing_like,
+            )
             if (::playerLikeButton.isInitialized) {
-                playerLikeButton.text = if (isLiked) "♥" else "♡"
-                playerLikeButton.setTextColor(if (isLiked) COLOR_ACCENT else COLOR_MUTED)
-                playerLikeButton.contentDescription = getString(
-                    if (isLiked) R.string.now_playing_unlike else R.string.now_playing_like,
+                playerLikeButton.setImageResource(
+                    if (isLiked) R.drawable.ic_heart_filled else R.drawable.ic_heart_outline,
                 )
+                playerLikeButton.tint(if (isLiked) COLOR_ACCENT else COLOR_MUTED)
+                playerLikeButton.contentDescription = likeDescription
             }
             if (::nowPlayingLikeButton.isInitialized) {
-                nowPlayingLikeButton.text = if (isLiked) "♥" else "♡"
-                nowPlayingLikeButton.setTextColor(if (isLiked) COLOR_ACCENT else COLOR_MUTED)
-                nowPlayingLikeButton.contentDescription = getString(
-                    if (isLiked) R.string.now_playing_unlike else R.string.now_playing_like,
+                nowPlayingLikeButton.setImageResource(
+                    if (isLiked) R.drawable.ic_heart_filled else R.drawable.ic_heart_outline,
                 )
+                nowPlayingLikeButton.tint(if (isLiked) COLOR_ACCENT else COLOR_MUTED)
+                nowPlayingLikeButton.contentDescription = likeDescription
             }
         }
     }
@@ -1151,12 +1184,14 @@ class MainActivity :
             textSize = 11f
             setTextColor(COLOR_MUTED)
         }, LinearLayout.LayoutParams(0, WRAP, 1f))
-        actions.addView(Button(this).apply {
-            text = "▶"
-            contentDescription = getString(R.string.play_track_named, playlist.name)
-            styleActionButton(this, true)
-            setOnClickListener { loadPlaylistAndPlay(playlist.id) }
-        }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(3) })
+        actions.addView(iconButton(
+            iconRes = R.drawable.ic_play,
+            description = getString(R.string.play_track_named, playlist.name),
+            fill = COLOR_ACCENT,
+            tint = Color.BLACK,
+            sizeDp = 48,
+            insetDp = 13,
+        ) { loadPlaylistAndPlay(playlist.id) }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(3) })
         card.addView(actions)
         val params = GridLayout.LayoutParams(
             GridLayout.spec(cellIndex / columns),
@@ -1394,11 +1429,7 @@ class MainActivity :
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        artAndCopy.addView(TextView(this@MainActivity).apply {
-            text = "♫"
-            textSize = 36f
-            gravity = Gravity.CENTER
-            setTextColor(COLOR_BACKGROUND)
+        artAndCopy.addView(iconView(R.drawable.ic_note, 36, COLOR_BACKGROUND).apply {
             background = roundedBackground(COLOR_ACCENT_SECONDARY, dp(20))
             contentDescription = getString(R.string.music_collection_art)
         }, LinearLayout.LayoutParams(dp(72), dp(72)).apply { marginEnd = dp(16) })
@@ -1680,22 +1711,18 @@ class MainActivity :
             background = roundedBackground(COLOR_SURFACE, dp(24))
             setPadding(dp(6), dp(4), dp(6), dp(4))
         }
-        val searchIcon = TextView(this).apply {
-            text = "⌕"
-            textSize = 22f
-            gravity = Gravity.CENTER
-            setTextColor(COLOR_MUTED)
+        val searchIcon = iconView(R.drawable.ic_search_outline, 22, COLOR_MUTED).apply {
             setPadding(dp(8), 0, 0, 0)
         }
         searchBox.addView(searchIcon, LinearLayout.LayoutParams(WRAP, MATCH))
         searchBox.addView(searchInput, LinearLayout.LayoutParams(0, dp(48), 1f))
-        val clearSearchButton = Button(this).apply {
-            text = "×"
-            contentDescription = getString(R.string.clear_search)
-            styleActionButton(this, false)
-            setOnClickListener { clearOnlineSearch() }
-            visibility = View.GONE
-        }
+        val clearSearchButton = iconButton(
+            iconRes = R.drawable.ic_close,
+            description = getString(R.string.clear_search),
+            tint = COLOR_MUTED,
+            sizeDp = 44,
+        ) { clearOnlineSearch() }
+        clearSearchButton.visibility = View.GONE
         searchBox.addView(clearSearchButton, LinearLayout.LayoutParams(dp(44), dp(44)))
         searchInput.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -1797,12 +1824,8 @@ class MainActivity :
         addView(copy, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.START or Gravity.CENTER_VERTICAL).apply {
             rightMargin = artworkSize + dp(12)
         })
-        addView(TextView(this@MainActivity).apply {
-            text = "♫"
-            textSize = if (compact) 62f else 88f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            background = roundedBackground(Color.argb(45, 255, 255, 255), artworkSize / 2)
+        addView(iconView(R.drawable.ic_note, if (compact) 62 else 88, Color.WHITE).apply {
+            background = roundedBackground(Color.argb(45, 255, 255, 255), artworkSize)
             contentDescription = getString(R.string.home_hero_art_description)
         }, FrameLayout.LayoutParams(artworkSize, artworkSize, Gravity.END or Gravity.CENTER_VERTICAL))
     }
@@ -1896,13 +1919,13 @@ class MainActivity :
             sectionTitle(getString(R.string.library_title)),
             LinearLayout.LayoutParams(0, WRAP, 1f),
         )
-        librarySortButton = Button(this).apply {
-            text = "⇵"
-            textSize = 18f
-            contentDescription = getString(R.string.library_sort_menu)
-            styleLibraryIconButton(this)
-            setOnClickListener { showLibrarySortMenu(this) }
-        }
+        librarySortButton = iconButton(
+            iconRes = R.drawable.ic_chevron_down,
+            description = getString(R.string.library_sort_menu),
+            tint = COLOR_TEXT,
+            sizeDp = 40,
+            insetDp = 9,
+        ) { showLibrarySortMenu(librarySortButton) }
         headerRow.addView(librarySortButton, LinearLayout.LayoutParams(dp(40), dp(40)))
         root.addView(headerRow, matchWidth())
 
@@ -2046,12 +2069,7 @@ class MainActivity :
             val size = dp(56)
             if (isLikedSongs) {
                 cover.addView(
-                    TextView(this).apply {
-                        text = "♥"
-                        textSize = 20f
-                        gravity = Gravity.CENTER
-                        setTextColor(Color.WHITE)
-                    },
+                    iconView(R.drawable.ic_heart_filled, 22, Color.WHITE),
                     FrameLayout.LayoutParams(MATCH, MATCH),
                 )
             } else {
@@ -2093,16 +2111,14 @@ class MainActivity :
             row.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f).apply {
                 marginStart = dp(12)
             })
-            row.addView(
-                Button(this).apply {
-                    text = "⋮"
-                    textSize = 18f
-                    contentDescription = getString(R.string.playlist_menu_accessibility, playlist.name)
-                    styleLibraryIconButton(this)
-                    setOnClickListener { showPlaylistMenu(playlist, this) }
-                },
-                LinearLayout.LayoutParams(dp(40), dp(40)),
-            )
+            val playlistOverflow = iconButton(
+                iconRes = R.drawable.ic_more_vert,
+                description = getString(R.string.playlist_menu_accessibility, playlist.name),
+                tint = COLOR_MUTED,
+                sizeDp = 40,
+                insetDp = 9,
+            ) { showPlaylistMenu(playlist, row) }
+            row.addView(playlistOverflow, LinearLayout.LayoutParams(dp(40), dp(40)))
             root.addView(row, matchWidth().apply {
                 topMargin = dp(8)
                 bottomMargin = dp(1)
@@ -2125,13 +2141,7 @@ class MainActivity :
                 showTab(R.string.nav_playlists)
             }
         }
-        val glyph = TextView(this).apply {
-            text = "♥"
-            textSize = 26f
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            setTypeface(null, android.graphics.Typeface.BOLD)
-        }
+        val glyph = iconView(R.drawable.ic_heart_filled, 26, Color.WHITE)
         card.addView(glyph, LinearLayout.LayoutParams(dp(44), dp(44)))
         val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         labels.addView(
@@ -2149,12 +2159,13 @@ class MainActivity :
         }
         labels.addView(libraryLikedSongsSubtitle, LinearLayout.LayoutParams(0, WRAP, 1f))
         card.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(8) })
-        val playButton = circleButton(
-            "▶",
-            getString(R.string.play),
-            Color.WHITE,
-            Color.BLACK,
-            18f,
+        val playButton = iconButton(
+            iconRes = R.drawable.ic_play,
+            description = getString(R.string.play),
+            fill = Color.WHITE,
+            tint = Color.BLACK,
+            sizeDp = 40,
+            insetDp = 11,
         ) {
             lifecycleScope.launch {
                 val liked = playlistViewModel.likedPlaylistNamed(getString(R.string.liked_songs))
@@ -2270,30 +2281,6 @@ class MainActivity :
     }
 
     /** Circular transparent icon button, matching Spotify's header affordances. */
-    private fun styleLibraryIconButton(button: Button) {
-        button.isAllCaps = false
-        button.setTextColor(COLOR_TEXT)
-        button.setPadding(0, 0, 0, 0)
-        button.minWidth = 0
-        button.minimumWidth = 0
-        button.stateListAnimator = null
-        button.includeFontPadding = false
-        button.gravity = Gravity.CENTER
-        button.setOnTouchListener { view, event ->
-            if (animationsEnabled()) {
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> view.animate()
-                        .scaleX(0.92f).scaleY(0.92f)
-                        .setDuration(BUTTON_PRESS_MS).start()
-
-                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> view.animate()
-                        .scaleX(1f).scaleY(1f)
-                        .setDuration(BUTTON_PRESS_MS).start()
-                }
-            }
-            false
-        }
-    }
 
     private fun updateLibraryControlLabels(groupMode: Int, sortMode: Int) {
         if (!::libraryFilterButton.isInitialized || !::librarySortButton.isInitialized) return
@@ -2522,15 +2509,20 @@ class MainActivity :
 
     private fun buildPlayerScreen(scroll: ScrollView) {
         val root = scrollContent(scroll)
+        // Spotify's now-playing screen fades from an art-derived tint down to the base black.
+        root.background = verticalGradient(intArrayOf(COLOR_HERO_MIDDLE, COLOR_BACKGROUND))
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         header.addView(
-            circleButton("‹", getString(R.string.now_playing_collapse), Color.TRANSPARENT, COLOR_TEXT, 26f) {
-                showTab(previousTabBeforePlayer)
-            },
+            iconButton(
+                iconRes = R.drawable.ic_chevron_down,
+                description = getString(R.string.now_playing_collapse),
+                tint = COLOR_TEXT,
+                sizeDp = 44,
+            ) { showTab(previousTabBeforePlayer) },
             LinearLayout.LayoutParams(dp(44), dp(44)),
         )
         val headerCenter = LinearLayout(this).apply {
@@ -2543,6 +2535,7 @@ class MainActivity :
             setTypeface(null, android.graphics.Typeface.BOLD)
             setTextColor(COLOR_MUTED)
             gravity = Gravity.CENTER
+            letterSpacing = 0.08f
         }
         playerHeaderTitle = TextView(this).apply {
             text = getString(R.string.library_title)
@@ -2557,9 +2550,12 @@ class MainActivity :
         headerCenter.addView(playerHeaderTitle)
         header.addView(headerCenter, LinearLayout.LayoutParams(0, WRAP, 1f))
         header.addView(
-            circleButton("⋮", getString(R.string.track_details), Color.TRANSPARENT, COLOR_MUTED, 22f) {
-                currentPlaybackTrack?.let(::showTrackDetails)
-            },
+            iconButton(
+                iconRes = R.drawable.ic_more_vert,
+                description = getString(R.string.track_details),
+                tint = COLOR_MUTED,
+                sizeDp = 44,
+            ) { currentPlaybackTrack?.let(::showTrackDetails) },
             LinearLayout.LayoutParams(dp(44), dp(44)),
         )
         root.addView(header, matchWidth().apply { bottomMargin = dp(8) })
@@ -2568,15 +2564,16 @@ class MainActivity :
             scaleType = ImageView.ScaleType.CENTER_CROP
             background = roundedBackground(COLOR_SURFACE, dp(8))
             clipToOutline = true
-            elevation = dp(8).toFloat()
-            setImageResource(android.R.drawable.ic_media_play)
+            elevation = dp(16).toFloat()
+            setImageResource(R.drawable.ic_album)
+            imageTintList = android.content.res.ColorStateList.valueOf(COLOR_SURFACE)
             contentDescription = getString(R.string.track_artwork)
         }
         val artworkSize = minOf(dp(340), resources.displayMetrics.widthPixels - dp(64))
         root.addView(playerArtwork, LinearLayout.LayoutParams(artworkSize, artworkSize).apply {
             gravity = Gravity.CENTER_HORIZONTAL
             topMargin = dp(4)
-            bottomMargin = dp(20)
+            bottomMargin = dp(24)
         })
 
         val trackRow = LinearLayout(this).apply {
@@ -2586,14 +2583,14 @@ class MainActivity :
         val trackLabels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         playerTitle = TextView(this).apply {
             text = getString(R.string.nothing_playing)
-            textSize = 21f
-            maxLines = 1
+            textSize = 23f
+            maxLines = 2
             ellipsize = android.text.TextUtils.TruncateAt.END
             setTypeface(null, android.graphics.Typeface.BOLD)
             setTextColor(COLOR_TEXT)
         }
         playerArtist = TextView(this).apply {
-            textSize = 14f
+            textSize = 15f
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
             setTextColor(COLOR_MUTED)
@@ -2602,7 +2599,12 @@ class MainActivity :
         trackLabels.addView(playerArtist)
         trackRow.addView(trackLabels, LinearLayout.LayoutParams(0, WRAP, 1f))
 
-        playerLikeButton = circleButton("♡", getString(R.string.now_playing_like), Color.TRANSPARENT, COLOR_MUTED, 24f) {
+        playerLikeButton = iconButton(
+            iconRes = R.drawable.ic_heart_outline,
+            description = getString(R.string.now_playing_like),
+            tint = COLOR_MUTED,
+            sizeDp = 44,
+        ) {
             currentPlaybackTrack?.let { track ->
                 lifecycleScope.launch {
                     val likedPlaylist = playlistViewModel.likedPlaylistNamed(getString(R.string.liked_songs))
@@ -2629,10 +2631,14 @@ class MainActivity :
                 }
             })
         }
-        root.addView(playerSeek, matchWidth().apply { topMargin = dp(14) })
+        root.addView(playerSeek, matchWidth().apply { topMargin = dp(18) })
         val times = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        playerPosition = TextView(this).apply { text = "0:00"; textSize = 11f; setTextColor(COLOR_MUTED) }
-        playerDuration = TextView(this).apply { text = "0:00"; textSize = 11f; gravity = Gravity.END; setTextColor(COLOR_MUTED) }
+        playerPosition = TextView(this).apply {
+            text = "0:00"; textSize = 11f; setTextColor(COLOR_MUTED); letterSpacing = 0.04f
+        }
+        playerDuration = TextView(this).apply {
+            text = "0:00"; textSize = 11f; gravity = Gravity.END; setTextColor(COLOR_MUTED); letterSpacing = 0.04f
+        }
         times.addView(playerPosition, LinearLayout.LayoutParams(0, WRAP, 1f))
         times.addView(playerDuration, LinearLayout.LayoutParams(0, WRAP, 1f))
         root.addView(times)
@@ -2641,28 +2647,50 @@ class MainActivity :
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        shuffleButton = circleButton("⇄", getString(R.string.shuffle), Color.TRANSPARENT, COLOR_MUTED, 22f) {
+        shuffleButton = iconButton(
+            iconRes = R.drawable.ic_shuffle,
+            description = getString(R.string.shuffle),
+            tint = COLOR_MUTED,
+        ) {
             val state = playbackSnapshot
             playbackService?.setShuffle(!(state?.shuffle ?: false))
         }
         mainControls.addView(shuffleButton, LinearLayout.LayoutParams(0, dp(48), 1f))
 
-        val previousButton = circleButton("|◀", getString(R.string.previous), Color.TRANSPARENT, COLOR_TEXT, 22f) {
-            playPrevious()
-        }
-        mainControls.addView(previousButton, LinearLayout.LayoutParams(0, dp(48), 1f))
+        mainControls.addView(
+            iconButton(
+                iconRes = R.drawable.ic_skip_previous,
+                description = getString(R.string.previous),
+                tint = COLOR_TEXT,
+            ) { playPrevious() },
+            LinearLayout.LayoutParams(0, dp(48), 1f),
+        )
 
-        playButton = circleButton("▶", getString(R.string.play), Color.WHITE, Color.BLACK, 24f) {
-            togglePlayback()
-        }.apply { elevation = dp(4).toFloat() }
+        // Spotify's primary transport: white disc, black glyph.
+        playButton = iconButton(
+            iconRes = R.drawable.ic_play,
+            description = getString(R.string.play),
+            fill = Color.WHITE,
+            tint = Color.BLACK,
+            sizeDp = 64,
+            insetDp = 18,
+        ) { togglePlayback() }
         mainControls.addView(playButton, LinearLayout.LayoutParams(dp(64), dp(64)))
 
-        val nextButton = circleButton("▶|", getString(R.string.next), Color.TRANSPARENT, COLOR_TEXT, 22f) {
-            playNext()
-        }
-        mainControls.addView(nextButton, LinearLayout.LayoutParams(0, dp(48), 1f))
+        mainControls.addView(
+            iconButton(
+                iconRes = R.drawable.ic_skip_next,
+                description = getString(R.string.next),
+                tint = COLOR_TEXT,
+            ) { playNext() },
+            LinearLayout.LayoutParams(0, dp(48), 1f),
+        )
 
-        repeatButton = circleButton("↻", getString(R.string.repeat), Color.TRANSPARENT, COLOR_MUTED, 22f) {
+        repeatButton = iconButton(
+            iconRes = R.drawable.ic_repeat,
+            description = getString(R.string.repeat),
+            tint = COLOR_MUTED,
+        ) {
             val mode = playbackSnapshot?.repeatMode ?: 0
             playbackService?.setRepeatMode((mode + 1) % 3)
         }
@@ -2675,7 +2703,7 @@ class MainActivity :
             contentDescription = getString(R.string.playback_speed_label)
             background = roundedBackground(COLOR_SURFACE, dp(12))
             adapter = styledSpinnerAdapter(
-                PLAYBACK_SPEEDS.map { getString(R.string.playback_speed, it) },
+                PLAYBACK_SPEEDS.map { getString(R.string.playback_speed, formatPlaybackSpeed(it)) },
             )
             onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
                 override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
@@ -2792,11 +2820,27 @@ class MainActivity :
         val navigation = (content.parent as LinearLayout).getChildAt(2) as LinearLayout
         for (i in 0 until navigation.childCount) {
             val item = navigation.getChildAt(i) as LinearLayout
-            val selected = item.tag == label
+            val itemLabel = item.tag as? Int ?: continue
+            val selected = itemLabel == label
             item.isSelected = selected
             item.background = null
             for (child in 0 until item.childCount) {
-                (item.getChildAt(child) as TextView).setTextColor(if (selected) COLOR_TEXT else COLOR_MUTED)
+                when (val childView = item.getChildAt(child)) {
+                    is TextView -> childView.setTextColor(if (selected) COLOR_TEXT else COLOR_MUTED)
+                    is ImageView -> {
+                        childView.setImageResource(
+                            if (selected) navIconFilled(itemLabel) else navIconOutline(itemLabel),
+                        )
+                        childView.imageTintList =
+                            android.content.res.ColorStateList.valueOf(if (selected) COLOR_TEXT else COLOR_MUTED)
+                    }
+
+                    is View -> {
+                        if (childView.tag == "nav-indicator") {
+                            childView.visibility = if (selected) View.VISIBLE else View.GONE
+                        }
+                    }
+                }
             }
         }
     }
@@ -3625,10 +3669,13 @@ class MainActivity :
         })
         row.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f))
         row.setOnClickListener { playTrackList(playQueue, playQueue.indexOfFirst { it.uri == track.uri }) }
-        if (withPlaylistAction) row.addView(Button(this).apply {
-            text = "+"; contentDescription = getString(R.string.add_to_playlist); styleActionButton(this, false)
-            setOnClickListener { choosePlaylistForTrack(track) }
-        }, LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginStart = dp(6) })
+        if (withPlaylistAction) row.addView(iconButton(
+            iconRes = R.drawable.ic_add,
+            description = getString(R.string.add_to_playlist),
+            tint = COLOR_MUTED,
+            sizeDp = 42,
+            insetDp = 10,
+        ) { choosePlaylistForTrack(track) }, LinearLayout.LayoutParams(dp(42), dp(42)).apply { marginStart = dp(6) })
         row.setOnLongClickListener {
             AlertDialog.Builder(this).setTitle(track.title).setItems(
                 arrayOf(
@@ -4104,12 +4151,13 @@ class MainActivity :
 
         // Top bar: round back button.
         root.addView(
-            circleButton(
-                label = "‹",
+            iconButton(
+                iconRes = R.drawable.ic_arrow_back,
                 description = getString(R.string.playlist_back),
                 fill = Color.argb(110, 0, 0, 0),
-                textColor = COLOR_TEXT,
-                textSizeSp = 24f,
+                tint = COLOR_TEXT,
+                sizeDp = 40,
+                insetDp = 9,
             ) { closePlaylistDetail() },
             LinearLayout.LayoutParams(dp(40), dp(40)),
         )
@@ -4156,23 +4204,23 @@ class MainActivity :
             gravity = Gravity.CENTER_VERTICAL
         }
         actions.addView(
-            circleButton(
-                label = "+",
+            iconButton(
+                iconRes = R.drawable.ic_add,
                 description = getString(R.string.add_tracks),
                 fill = Color.TRANSPARENT,
-                textColor = COLOR_MUTED,
-                textSizeSp = 26f,
-                stroke = COLOR_MUTED,
+                tint = COLOR_MUTED,
+                sizeDp = 40,
+                insetDp = 10,
             ) { chooseTracksForPlaylist(playlist.id) },
             LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(12) },
         )
         actions.addView(
-            circleButton(
-                label = "⋮",
+            iconButton(
+                iconRes = R.drawable.ic_more_vert,
                 description = getString(R.string.playlist_actions_accessibility, playlist.name),
-                fill = Color.TRANSPARENT,
-                textColor = COLOR_MUTED,
-                textSizeSp = 22f,
+                tint = COLOR_MUTED,
+                sizeDp = 40,
+                insetDp = 10,
             ) {},
             LinearLayout.LayoutParams(dp(40), dp(40)),
         )
@@ -4180,12 +4228,12 @@ class MainActivity :
         actions.getChildAt(1).setOnClickListener { showPlaylistMenu(playlist, it) }
         actions.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         actions.addView(
-            circleButton(
-                label = "⇄",
+            iconButton(
+                iconRes = R.drawable.ic_shuffle,
                 description = getString(R.string.playlist_shuffle_play),
-                fill = Color.TRANSPARENT,
-                textColor = COLOR_TEXT,
-                textSizeSp = 22f,
+                tint = COLOR_TEXT,
+                sizeDp = 48,
+                insetDp = 12,
             ) {
                 if (localTracks.isEmpty()) loadPlaylistAndPlay(playlist.id)
                 else {
@@ -4196,16 +4244,17 @@ class MainActivity :
             LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(10) },
         )
         actions.addView(
-            circleButton(
-                label = "▶",
+            iconButton(
+                iconRes = R.drawable.ic_play,
                 description = getString(R.string.playlist_play_accessibility, playlist.name),
                 fill = COLOR_ACCENT,
-                textColor = COLOR_BACKGROUND,
-                textSizeSp = 22f,
+                tint = COLOR_BACKGROUND,
+                sizeDp = 58,
+                insetDp = 17,
             ) {
                 playbackService?.setShuffle(false)
                 loadPlaylistAndPlay(playlist.id)
-            }.apply { elevation = dp(4).toFloat() },
+            },
             LinearLayout.LayoutParams(dp(58), dp(58)),
         )
         root.addView(actions, matchWidth().apply {
@@ -4270,12 +4319,12 @@ class MainActivity :
                 setPadding(0, dp(2), 0, 0)
             })
             row.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f))
-            val more = circleButton(
-                label = "⋮",
+            val more = iconButton(
+                iconRes = R.drawable.ic_more_vert,
                 description = getString(R.string.playlist_track_actions_accessibility, track.title),
-                fill = Color.TRANSPARENT,
-                textColor = COLOR_MUTED,
-                textSizeSp = 20f,
+                tint = COLOR_MUTED,
+                sizeDp = 40,
+                insetDp = 10,
             ) {}
             more.setOnClickListener { anchor ->
                 android.widget.PopupMenu(this, anchor).apply {
@@ -4357,12 +4406,10 @@ class MainActivity :
                 artworkView(withArt.first(), size).apply { background = null },
                 FrameLayout.LayoutParams(MATCH, MATCH),
             )
-            else -> frame.addView(TextView(this).apply {
-                text = "♪"
-                textSize = 72f
-                gravity = Gravity.CENTER
-                setTextColor(COLOR_MUTED)
-            }, FrameLayout.LayoutParams(MATCH, MATCH))
+            else -> frame.addView(
+                iconView(R.drawable.ic_note, 56, COLOR_MUTED),
+                FrameLayout.LayoutParams(MATCH, MATCH),
+            )
         }
         return frame
     }
@@ -4677,7 +4724,9 @@ class MainActivity :
                 playerHeaderTitle.text = track.album.ifBlank { getString(R.string.library_title) }
             }
         }
-        nowPlayingButton.text = if (snapshot.isPlaying) "❚❚" else "▶"
+        nowPlayingButton.setImageResource(
+            if (snapshot.isPlaying) R.drawable.ic_pause else R.drawable.ic_play,
+        )
         nowPlayingButton.contentDescription = getString(
             if (snapshot.isPlaying) R.string.pause_playback else R.string.play,
         )
@@ -4690,7 +4739,9 @@ class MainActivity :
         playerPosition.text = formatTime(snapshot.positionMs.toLong())
         playerDuration.text = formatTime(snapshot.durationMs.toLong())
         playerSeek.isEnabled = snapshot.isPrepared
-        playButton.text = if (snapshot.isPlaying) "❚❚" else "▶"
+        playButton.setImageResource(
+            if (snapshot.isPlaying) R.drawable.ic_pause else R.drawable.ic_play,
+        )
         playButton.contentDescription = getString(
             if (snapshot.isPlaying) R.string.pause_playback else R.string.play,
         )
@@ -4700,12 +4751,11 @@ class MainActivity :
             track != null -> getString(R.string.player_paused)
             else -> getString(R.string.player_empty)
         }
-        shuffleButton.isSelected = snapshot.shuffle
+        shuffleButton.tint(if (snapshot.shuffle) COLOR_ACCENT else COLOR_MUTED)
         shuffleButton.contentDescription = getString(
             if (snapshot.shuffle) R.string.shuffle_enabled else R.string.shuffle,
         )
-        shuffleButton.setTextColor(if (snapshot.shuffle) COLOR_ACCENT else COLOR_MUTED)
-        repeatButton.isSelected = snapshot.repeatMode != 0
+        repeatButton.tint(if (snapshot.repeatMode != 0) COLOR_ACCENT else COLOR_MUTED)
         repeatButton.contentDescription = getString(
             when (snapshot.repeatMode) {
                 1 -> R.string.repeat_all
@@ -4713,8 +4763,6 @@ class MainActivity :
                 else -> R.string.repeat
             },
         )
-        repeatButton.text = if (snapshot.repeatMode == 2) "🔂" else "↻"
-        repeatButton.setTextColor(if (snapshot.repeatMode != 0) COLOR_ACCENT else COLOR_MUTED)
         updatePlaybackLikeState()
         syncingPlaybackControls = true
         speedSpinner.setSelection(
@@ -4883,6 +4931,15 @@ class MainActivity :
         private const val DEFAULT_EQUALIZER_LEVEL = 50
         private const val DEFAULT_SPEED_INDEX = 2
         private val PLAYBACK_SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
+
+        /** "1", "1.25", "0.5" — drops a trailing ".0" so the label reads like a speed chip. */
+        private fun formatPlaybackSpeed(speed: Float): String {
+            val text = String.format(java.util.Locale.US, "%.2f", speed)
+                .trimEnd('0')
+                .trimEnd('.')
+            return text.ifEmpty { "0" }
+        }
+
         private val AUDIO_EXTENSIONS =
             setOf("aac", "aif", "aiff", "alac", "amr", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav", "wma")
     }
