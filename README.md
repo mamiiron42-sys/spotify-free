@@ -13,6 +13,7 @@ A native Android front end embedding the upstream [`yt-dlp`](https://github.com/
 - Persistent job queue with configurable concurrency (1–10 downloads), per-job retry/pause/resume/cancel, and restart recovery.
 - Optional Wi-Fi-only scheduling, queued-job priority, and retry-all controls.
 - Separate Search, Library, Playlists, Player, and Queue tabs.
+- Spotify-style dark interface: signature green accents, tinted bottom navigation with a filled icon on the active tab, a mini player with skip control above it, vector icons for every transport and row action, and a gradient now-playing screen.
 - Unlimited, on-device Recently Played history records each listen after playback starts and pages older entries on demand.
 - YouTube track metadata and cover artwork are imported into the library when available; audio tags and artwork are embedded in MP3 conversions when supported.
 - Import local audio files, browse/filter tracks by artist or album, create/reorder/share/import playlists, inspect track details, and manage downloaded files.

@@ -148,11 +148,14 @@ internal class LibraryAdapter(
             LinearLayout.LayoutParams(0, WRAP, 1f),
         )
         artistLine.addView(
-            Button(context).apply {
-                tag = TAG_MENU
-                text = "⋮"
-                context.styleActionButton(this, false)
-            },
+            with(context) {
+                iconButton(
+                    iconRes = R.drawable.ic_more_vert,
+                    description = getString(R.string.more_options),
+                    tint = COLOR_MUTED,
+                    sizeDp = 48,
+                )
+            }.apply { tag = TAG_MENU },
             LinearLayout.LayoutParams(context.dp(48), context.dp(48)).apply {
                 marginStart = context.dp(3)
             },
@@ -169,7 +172,7 @@ internal class LibraryAdapter(
         private val artwork = card.findViewWithTag<ImageView>(TAG_ARTWORK)
         private val title = card.findViewWithTag<TextView>(TAG_TITLE)
         private val artist = card.findViewWithTag<TextView>(TAG_ARTIST)
-        private val menuButton = card.findViewWithTag<Button>(TAG_MENU)
+        private val menuButton = card.findViewWithTag<ImageView>(TAG_MENU)
 
         fun bind(row: LibraryRow.Track, cellWidthPx: Int) {
             val track = row.track
