@@ -49,3 +49,4 @@ This is an Android app around yt-dlp, not a rewrite or complete port of all yt-d
 
 The yt-dlp Python dependency is downloaded from PyPI during the build. yt-dlp is licensed under the Unlicense, with third-party components documented upstream. The bundled FFmpegKit AAR is distributed under LGPL-3.0 and includes third-party libraries with their own notices; review the upstream `LICENSE` and `THIRD-PARTY-NOTICES.txt`, and satisfy applicable LGPL source, relinking, and notice requirements before redistributing an APK. Chaquopy and Android build dependencies retain their own licenses. This is a dependency selected for MP3 encoding, not an endorsement or legal compliance determination.
 # spotify-free
+# spotify-free
