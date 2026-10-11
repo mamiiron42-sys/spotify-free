@@ -62,6 +62,7 @@ import io.github.ytdlpandroid.viewmodel.SearchViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -147,7 +148,6 @@ class MainActivity :
     private lateinit var homeCategories: LinearLayout
     private lateinit var homeSubcategories: LinearLayout
     private lateinit var homeLibraryContent: LinearLayout
-    private lateinit var nowPlayingContent: LinearLayout
     private lateinit var homeMusicGrid: GridLayout
     private lateinit var downloadSettingsContent: LinearLayout
     private lateinit var downloadSettingsToggle: TextView
@@ -164,10 +164,8 @@ class MainActivity :
     private lateinit var queueEmpty: TextView
     private lateinit var libraryList: RecyclerView
     private lateinit var downloadHistoryList: GridLayout
-    private lateinit var playbackQueueList: LinearLayout
     private lateinit var playerScreenRoot: LinearLayout
     private var snackbarView: LinearLayout? = null
-    private var renderedQueueSignature: String? = null
     private var snackbarHideHandle: Runnable? = null
     private lateinit var libraryRecentHistory: GridLayout
     private lateinit var librarySortButton: ImageView
@@ -251,9 +249,6 @@ class MainActivity :
     private var lastArtworkAnimationUri: String? = null
     private val playlists by lazy { PlaylistStore(this) }
     // Tracks captured from other apps' media sessions (YouTube / YouTube Music).
-    private val nowPlayingEntries = mutableListOf<NowPlayingEntry>()
-    private var nowPlayingGeneration = 0
-    private var nowPlayingResolving = false
     private val importedUris: Set<String>
         get() =
             getSharedPreferences(PREFERENCES, MODE_PRIVATE).getStringSet(KEY_IMPORTED, emptySet())
@@ -322,11 +317,8 @@ class MainActivity :
          * would reset scroll position and fight the user's reorder taps.
          */
         private fun refreshQueueIfChanged() {
-            if (!::playbackQueueList.isInitialized || destroyed) return
-            val signature = playbackQueueSignature()
-            if (signature == renderedQueueSignature) return
-            renderedQueueSignature = signature
-            renderPlaybackQueue()
+            if (destroyed) return
+            playbackQueueSection.refreshIfChanged()
         }
 
         override fun onPlaybackHistoryChanged() {
@@ -370,24 +362,6 @@ class MainActivity :
         requestMissingPermissions()
     }
 
-    /**
-     * Re-renders the capture section when the user grants or revokes notification access.
-     * Revocation can only be observed here: nothing is delivered to [onResume] when it happens
-     * in system settings.
-     */
-    private fun observeNowPlayingAccess() {
-        lifecycleScope.launch {
-            NowPlayingListenerService.granted.collect { granted ->
-                if (destroyed) return@collect
-                if (granted) {
-                    refreshNowPlayingHistory()
-                } else if (::nowPlayingContent.isInitialized) {
-                    renderNowPlayingContent()
-                }
-            }
-        }
-    }
-
     override fun onResume() {
         super.onResume()
         // A full-screen player is a pushed destination: Back should leave it, not the app.
@@ -395,7 +369,7 @@ class MainActivity :
             previousTabBeforePlayer != R.string.nav_player
         // Access may have been granted (or revoked) while the app was in the background; the
         // listener itself is rebound by the system, we only need the UI to catch up.
-        if (::nowPlayingContent.isInitialized) renderNowPlayingContent()
+        nowPlayingSection.render()
         if (NowPlayingListenerService.isGranted(this)) {
             NowPlayingListenerService.requestRebind(this)
         }
@@ -1866,153 +1840,27 @@ class MainActivity :
     }
 
     /**
-     * Playback queue: what is playing now and what is next, with reorder and remove.
-     * This is the queue Spotify exposes from the player; the download jobs below it are a
-     * separate concern and used to be the only thing on this screen.
+     * The playback queue is owned by [PlaybackQueueSection]; the host interface below is
+     * everything it needs from this activity.
      */
-    private fun buildPlaybackQueueSection(root: LinearLayout) {
-        playbackQueueList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val container = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(sectionTitle(getString(R.string.playback_queue_title)), matchWidth())
-            addView(playbackQueueList, matchWidth())
-        }
-        root.addView(container, matchWidth().apply { bottomMargin = dp(8) })
-        renderPlaybackQueue()
+    private val playbackQueueHost = object : PlaybackQueueSection.Host {
+        override val playbackService: PlaybackService?
+            get() = this@MainActivity.playbackService
+        override val playbackSnapshot: PlaybackSnapshot?
+            get() = this@MainActivity.playbackSnapshot
+
+        override fun showSnackbar(message: String) = this@MainActivity.showSnackbar(message)
+        override fun showError(message: String) = this@MainActivity.showError(message)
     }
 
-    private fun playbackQueueSignature(): String? {
-        val service = playbackService ?: return null
-        val uris = service.getQueue().map { it.uri }
-        if (uris.isEmpty()) return ""
-        return uris.joinToString("\u0000") + "\u0000#" + (playbackSnapshot?.index ?: -1)
+    private val playbackQueueSection by lazy {
+        PlaybackQueueSection(this, playbackQueueHost)
     }
 
-    private fun renderPlaybackQueue() {
-        if (!::playbackQueueList.isInitialized) return
-        playbackQueueList.removeAllViews()
-        val snapshot = playbackSnapshot
-        val queue = playbackService?.getQueue().orEmpty()
-        if (queue.isEmpty()) {
-            playbackQueueList.addView(emptyMessage(getString(R.string.playback_queue_empty)), matchWidth())
-            return
-        }
-        queue.forEachIndexed { index, track ->
-            val isCurrent = index == snapshot?.index
-            val audioTrack = AudioTrack(
-                uri = android.net.Uri.parse(track.uri),
-                title = track.title,
-                artist = track.artist,
-                album = track.album,
-                durationMs = track.durationMs,
-                artwork = null,
-                dateAdded = 0L,
-            )
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                if (isCurrent) {
-                    background = roundedBackground(COLOR_CARD, dp(8))
-                }
-                setPadding(dp(8), dp(6), dp(8), dp(6))
-                isClickable = true
-                isFocusable = true
-                contentDescription = track.title
-                setOnClickListener { playbackService?.playQueueIndex(index) }
-            }
-            val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            labels.addView(TextView(this).apply {
-                text = if (isCurrent) track.title else track.title
-                textSize = 14f
-                maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                setTypeface(null, android.graphics.Typeface.BOLD)
-                setTextColor(if (isCurrent) COLOR_ACCENT else COLOR_TEXT)
-            })
-            labels.addView(TextView(this).apply {
-                text = track.artist.ifBlank { formatTime(track.durationMs.toLong()) }
-                textSize = 12f
-                maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                setTextColor(COLOR_MUTED)
-            })
-            row.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(4) })
-
-            if (index > 0) {
-                row.addView(
-                    iconButton(
-                        iconRes = R.drawable.ic_chevron_down,
-                        description = getString(R.string.move_up),
-                        tint = COLOR_MUTED,
-                        sizeDp = 44,
-                        insetDp = 11,
-                    ) { reorderQueueItem(index, index - 1) },
-                    LinearLayout.LayoutParams(dp(44), dp(44)),
-                )
-            }
-            if (index < queue.lastIndex) {
-                val moveDown = iconButton(
-                    iconRes = R.drawable.ic_chevron_down,
-                    description = getString(R.string.move_down),
-                    tint = COLOR_MUTED,
-                    sizeDp = 44,
-                    insetDp = 11,
-                ) { reorderQueueItem(index, index + 1) }
-                // Same chevron, flipped so it points down.
-                moveDown.rotation = 180f
-                row.addView(moveDown, LinearLayout.LayoutParams(dp(44), dp(44)))
-            }
-            row.addView(
-                iconButton(
-                    iconRes = R.drawable.ic_close,
-                    description = getString(R.string.remove_from_queue, track.title),
-                    tint = COLOR_MUTED,
-                    sizeDp = 44,
-                    insetDp = 11,
-                ) { removeQueueItem(index, track.title) },
-                LinearLayout.LayoutParams(dp(44), dp(44)),
-            )
-            playbackQueueList.addView(row, matchWidth())
-        }
-        playbackQueueList.addView(
-            Button(this).apply {
-                text = getString(R.string.clear_upcoming)
-                styleActionButton(this, false)
-                setOnClickListener {
-                    playbackService?.clearUpcoming()
-                    renderPlaybackQueue()
-                }
-            },
-            matchWidth().apply { topMargin = dp(10) },
-        )
-        // Keep the signature in step with what was just drawn, so the snapshot a mutation
-        // publishes does not immediately re-render and reset scroll position.
-        renderedQueueSignature = playbackQueueSignature()
-    }
-
-    private fun reorderQueueItem(fromIndex: Int, toIndex: Int) {
-        val service = playbackService ?: return
-        if (!service.moveQueueItem(fromIndex, toIndex)) {
-            showError(getString(R.string.playback_queue_move_failed))
-            return
-        }
-        renderPlaybackQueue()
-    }
-
-    private fun removeQueueItem(index: Int, title: String) {
-        val service = playbackService ?: return
-        val removed = service.removeFromQueue(index)
-        renderPlaybackQueue()
-        if (!removed) {
-            showError(getString(R.string.playback_queue_remove_failed))
-            return
-        }
-        showSnackbar(getString(R.string.removed_from_queue))
-    }
 
     private fun buildQueueScreen(scroll: ScrollView) {
         val root = scrollContent(scroll)
-        buildPlaybackQueueSection(root)
+        playbackQueueSection.attachTo(root)
         root.addView(sectionTitle(getString(R.string.queue_recent_jobs)))
         val settingsPanel = sectionCard()
         settingsPanel.addView(TextView(this).apply {
@@ -2392,259 +2240,102 @@ class MainActivity :
     }
 
     /**
-     * Shared "From YouTube" section. Added to both Home and Library so it reads as one
-     * surface rather than two, and so a single refresh keeps both in sync.
+     * The captured-listening section is owned by [NowPlayingSection]; this host is everything
+     * it needs from the activity. It deliberately exposes suspend functions rather than the
+     * store, so the section never touches SQLite directly.
      */
-    private fun buildNowPlayingSection(root: LinearLayout) {
-        root.addView(sectionTitle(getString(R.string.now_playing_section)), matchWidth())
-        nowPlayingContent = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, 0, 0, dp(6))
+    private val nowPlayingHost = object : NowPlayingSection.Host {
+        override fun isCaptureGranted(): Boolean =
+            NowPlayingListenerService.isGranted(this@MainActivity)
+
+        override suspend fun loadCapturedEntries(): List<NowPlayingEntry> =
+            withContext(Dispatchers.IO) { playlists.getNowPlayingHistory(NOW_PLAYING_HISTORY_LIMIT) }
+
+        override suspend fun removeCapturedEntry(id: Long): Boolean =
+            withContext(Dispatchers.IO) {
+                try {
+                    playlists.deleteNowPlayingEntry(id)
+                } catch (error: Exception) {
+                    android.util.Log.e("MainActivity", "Could not remove captured entry", error)
+                    false
+                }
+            }
+
+        override suspend fun clearCapturedHistory(): Boolean =
+            withContext(Dispatchers.IO) {
+                try {
+                    playlists.clearNowPlayingHistory() > 0
+                } catch (error: Exception) {
+                    android.util.Log.e("MainActivity", "Could not clear captured history", error)
+                    false
+                }
+            }
+
+        override suspend fun saveResolvedEntry(entry: NowPlayingEntry) {
+            withContext(Dispatchers.IO) {
+                try {
+                    playlists.recordNowPlaying(entry)
+                    playlists.deleteNowPlayingEntry(entry.id)
+                } catch (error: Exception) {
+                    android.util.Log.e("MainActivity", "Could not resolve captured track", error)
+                }
+            }
         }
-        root.addView(nowPlayingContent, matchWidth().apply { bottomMargin = dp(10) })
-        renderNowPlayingContent()
+
+        override fun openListenerSettings() {
+            startActivity(NowPlayingListenerService.listenerSettingsIntent())
+        }
+
+        override fun resolveVideoId(title: String, artist: String, onResolved: (String?) -> Unit) {
+            val service = downloadService
+            if (service == null) {
+                onResolved(null)
+                return
+            }
+            service.searchMusic("$title $artist", 0, 1) { result ->
+                if (destroyed) return@searchMusic
+                onResolved(result.getOrNull()?.firstOrNull()?.let { VideoIds.fromUrl(it.url) })
+            }
+        }
+
+        override fun enqueueDownload(watchUrl: String) {
+            enqueueUrls(listOf(watchUrl), showStatus = false)
+        }
+
+        override fun showSnackbar(message: String) =
+            this@MainActivity.showSnackbar(message)
+
+        override fun showError(message: String) = this@MainActivity.showError(message)
+
+        override fun runBackground(block: suspend () -> Unit) {
+            lifecycleScope.launch(Dispatchers.IO) { block() }
+        }
+
+        override fun runOnMain(block: () -> Unit) {
+            runOnUiThread { if (!destroyed) block() }
+        }
+    }
+
+    private val nowPlayingSection by lazy { NowPlayingSection(this, nowPlayingHost) }
+
+    private fun buildNowPlayingSection(root: LinearLayout) {
+        nowPlayingSection.attachTo(root)
     }
 
     private fun refreshNowPlayingHistory() {
-        nowPlayingGeneration++
-        nowPlayingResolving = false
-        val generation = nowPlayingGeneration
-        lifecycleScope.launch(Dispatchers.IO) {
-            val entries = try {
-                playlists.getNowPlayingHistory(NOW_PLAYING_HISTORY_LIMIT)
-            } catch (error: Exception) {
-                android.util.Log.e("MainActivity", "Could not load captured history", error)
-                emptyList()
-            }
-            runOnUiThread {
-                if (destroyed || generation != nowPlayingGeneration) return@runOnUiThread
-                nowPlayingEntries.clear()
-                nowPlayingEntries.addAll(entries)
-                renderNowPlayingContent()
+        nowPlayingSection.refresh()
+    }
+
+    /** Re-renders the capture section when the user grants or revokes notification access. */
+    private fun observeNowPlayingAccess() {
+        lifecycleScope.launch {
+            NowPlayingListenerService.granted.collect { granted ->
+                if (destroyed) return@collect
+                if (granted) nowPlayingSection.refresh() else nowPlayingSection.render()
             }
         }
     }
 
-    private fun renderNowPlayingContent() {
-        if (!::nowPlayingContent.isInitialized || destroyed) return
-        nowPlayingContent.removeAllViews()
-        when {
-            !NowPlayingListenerService.isGranted(this) -> {
-                val body = TextView(this).apply {
-                    text = getString(R.string.now_playing_enable_body)
-                    textSize = 13f
-                    setTextColor(COLOR_MUTED)
-                    setPadding(0, 0, 0, dp(10))
-                }
-                val action = Button(this).apply {
-                    text = getString(R.string.now_playing_enable_action)
-                    styleActionButton(this, true)
-                    setOnClickListener { startActivity(NowPlayingListenerService.listenerSettingsIntent()) }
-                }
-                val card = LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    background = roundedBackground(COLOR_SURFACE, dp(12))
-                    setPadding(dp(14), dp(14), dp(14), dp(14))
-                    addView(TextView(this@MainActivity).apply {
-                        text = getString(R.string.now_playing_enable_title)
-                        textSize = 15f
-                        setTypeface(null, android.graphics.Typeface.BOLD)
-                        setTextColor(COLOR_TEXT)
-                        setPadding(0, 0, 0, dp(4))
-                    })
-                    addView(body)
-                    addView(action, LinearLayout.LayoutParams(WRAP, dp(44)))
-                }
-                nowPlayingContent.addView(card, matchWidth())
-            }
-
-            nowPlayingEntries.isEmpty() -> nowPlayingContent.addView(
-                emptyMessage(getString(R.string.now_playing_empty)),
-                matchWidth(),
-            )
-
-            else -> {
-                nowPlayingEntries.forEach { entry -> addNowPlayingCard(entry) }
-                val clear = Button(this).apply {
-                    text = getString(R.string.now_playing_clear)
-                    styleActionButton(this, false)
-                    setOnClickListener { confirmClearNowPlayingHistory() }
-                }
-                nowPlayingContent.addView(clear, LinearLayout.LayoutParams(MATCH, dp(44)).apply {
-                    topMargin = dp(8)
-                })
-                // Entries captured before the real video id was known still need one so they
-                // can be downloaded and can show artwork.
-                resolvePendingVideoIds()
-            }
-        }
-    }
-
-    private fun addNowPlayingCard(entry: NowPlayingEntry) {
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = roundedBackground(COLOR_SURFACE, dp(8))
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-        }
-        val artwork = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            background = roundedBackground(COLOR_BACKGROUND, dp(6))
-            contentDescription = getString(R.string.track_artwork)
-        }
-        // Only a resolved video id yields an i.ytimg.com thumbnail, which is also the only
-        // remote host the image loader trusts; unresolved entries fall back to the placeholder.
-        val resolvedId = entry.videoId.takeIf { !it.startsWith(PENDING_KEY_PREFIX) }
-        artwork.loadTrustedThumbnail(resolvedId?.let { "https://i.ytimg.com/vi/$it/hqdefault.jpg" })
-        row.addView(artwork, LinearLayout.LayoutParams(dp(52), dp(52)))
-
-        val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        labels.addView(TextView(this).apply {
-            text = entry.title
-            textSize = 15f
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(COLOR_TEXT)
-        })
-        labels.addView(TextView(this).apply {
-            text = entry.artist.ifBlank { getString(R.string.now_playing_source_other) }
-            textSize = 13f
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setTextColor(COLOR_MUTED)
-        })
-        row.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) })
-
-        row.addView(
-            iconButton(
-                iconRes = R.drawable.ic_download,
-                description = getString(R.string.now_playing_download),
-                tint = COLOR_ACCENT,
-                sizeDp = 44,
-                insetDp = 11,
-            ) { downloadNowPlayingEntry(entry) },
-            LinearLayout.LayoutParams(dp(44), dp(44)),
-        )
-        row.addView(
-            iconButton(
-                iconRes = R.drawable.ic_close,
-                description = getString(R.string.now_playing_clear),
-                tint = COLOR_MUTED,
-                sizeDp = 44,
-                insetDp = 11,
-            ) { removeNowPlayingEntry(entry) },
-            LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(2) },
-        )
-        nowPlayingContent.addView(row, matchWidth().apply { topMargin = dp(6) })
-    }
-
-    /**
-     * Captured tracks are stored under a title-derived key because the media session does not
-     * expose the video id. Resolving one real id via a single-result search turns the entry
-     * into a downloadable link and unlocks artwork.
-     */
-    private fun resolvePendingVideoIds() {
-        if (nowPlayingResolving) return
-        val pending = nowPlayingEntries.firstOrNull { it.videoId.startsWith(PENDING_KEY_PREFIX) } ?: return
-        val service = downloadService ?: return
-        nowPlayingResolving = true
-        service.searchMusic("${pending.title} ${pending.artist}", 0, 1) { result ->
-            nowPlayingResolving = false
-            if (destroyed) return@searchMusic
-            result.onSuccess { matches ->
-                val match = matches.firstOrNull()
-                val videoId = match?.let { VideoIds.fromUrl(it.url) }
-                if (videoId != null) {
-                    val resolved = pending.copy(videoId = videoId)
-                    lifecycleScope.launch(Dispatchers.IO) {
-                        try {
-                            // Insert under the real id, then drop the placeholder row, and keep
-                            // the new row's id locally so a later remove still finds it.
-                            playlists.recordNowPlaying(resolved)
-                            playlists.deleteNowPlayingEntry(pending.id)
-                        } catch (error: Exception) {
-                            android.util.Log.e("MainActivity", "Could not resolve captured track", error)
-                        }
-                    }
-                    val index = nowPlayingEntries.indexOf(pending)
-                    if (index >= 0) nowPlayingEntries[index] = resolved
-                    renderNowPlayingContent()
-                }
-            }
-        }
-    }
-
-    private fun downloadNowPlayingEntry(entry: NowPlayingEntry) {
-        val service = downloadService
-        if (service == null) {
-            showError(getString(R.string.now_playing_search_failed, entry.title))
-            return
-        }
-        if (!entry.videoId.startsWith(PENDING_KEY_PREFIX)) {
-            enqueueUrls(listOf(entry.watchUrl), showStatus = false)
-            showError(getString(R.string.now_playing_download_queued, entry.title))
-            return
-        }
-        // Not resolved yet: find the video id now, then enqueue the real watch URL.
-        service.searchMusic("${entry.title} ${entry.artist}", 0, 1) { result ->
-            if (destroyed) return@searchMusic
-            val videoId = result.getOrNull()?.firstOrNull()?.let { VideoIds.fromUrl(it.url) }
-            if (videoId == null) {
-                showError(getString(R.string.now_playing_search_failed, entry.title))
-            } else {
-                enqueueUrls(listOf("https://www.youtube.com/watch?v=$videoId"), showStatus = false)
-                showError(getString(R.string.now_playing_download_queued, entry.title))
-            }
-        }
-    }
-
-    private fun removeNowPlayingEntry(entry: NowPlayingEntry) {
-        lifecycleScope.launch(Dispatchers.IO) {
-            val removed = try {
-                playlists.deleteNowPlayingEntry(entry.id)
-            } catch (error: Exception) {
-                android.util.Log.e("MainActivity", "Could not remove captured entry", error)
-                false
-            }
-            runOnUiThread {
-                if (destroyed) return@runOnUiThread
-                if (removed) {
-                    nowPlayingEntries.remove(entry)
-                    renderNowPlayingContent()
-                } else {
-                    showError(getString(R.string.now_playing_remove_failed))
-                }
-            }
-        }
-    }
-
-    private fun confirmClearNowPlayingHistory() {
-        if (nowPlayingEntries.isEmpty()) return
-        AlertDialog.Builder(this)
-            .setMessage(getString(R.string.now_playing_clear_confirm))
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.now_playing_clear) { _, _ ->
-                lifecycleScope.launch(Dispatchers.IO) {
-                    val cleared = try {
-                        playlists.clearNowPlayingHistory() > 0
-                    } catch (error: Exception) {
-                        android.util.Log.e("MainActivity", "Could not clear captured history", error)
-                        false
-                    }
-                    runOnUiThread {
-                        if (destroyed) return@runOnUiThread
-                        if (cleared) {
-                            nowPlayingEntries.clear()
-                            renderNowPlayingContent()
-                        } else {
-                            showError(getString(R.string.now_playing_clear_failed))
-                        }
-                    }
-                }
-            }
-            .show()
-    }
 
     /** Songs section: group/sort controls, track grid, recent history and downloads. */
     private fun buildLibrarySongsContent(root: LinearLayout) {
@@ -5475,11 +5166,6 @@ class MainActivity :
         /** How many captured tracks to keep loaded for the "From YouTube" section. */
         private const val NOW_PLAYING_HISTORY_LIMIT = 40
 
-        /**
-         * Marks an entry captured before its video id was resolved. The session metadata does
-         * not carry the id, so these are resolved lazily via a one-result search.
-         */
-        private const val PENDING_KEY_PREFIX = "key:"
         private const val LIBRARY_MENU_GROUP = 2
         private const val TAB_TRANSITION_MS = 180L
         private const val RECENT_HISTORY_PAGE_SIZE = 32
