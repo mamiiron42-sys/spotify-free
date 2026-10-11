@@ -103,7 +103,8 @@ class PlaylistStore(context: Context) : SQLiteOpenHelper(
         }
         if (oldVersion < 3) createPlaybackHistorySchema(db)
         if (oldVersion < 12) mergeMediaStoreAliases(db)
-        if (oldVersion < 1 || newVersion > 12) {
+        if (oldVersion < 13) createNowPlayingHistorySchema(db)
+        if (oldVersion < 1 || newVersion > 13) {
             error("No playlist database migration exists from version $oldVersion")
         }
     }
@@ -183,6 +184,28 @@ class PlaylistStore(context: Context) : SQLiteOpenHelper(
                 played_at INTEGER NOT NULL
             )""".trimIndent(),
         )
+    }
+
+    /**
+     * History of what other apps played, captured from their media sessions. Kept apart from
+     * [playback_history] because these rows have no local file: they offer a download, not
+     * playback, and must never be treated as library tracks.
+     */
+    private fun createNowPlayingHistorySchema(db: SQLiteDatabase) {
+        db.execSQL(
+            """CREATE TABLE now_playing_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                video_id TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                artist TEXT NOT NULL,
+                album TEXT NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                artwork_url TEXT,
+                source_package TEXT NOT NULL,
+                played_at INTEGER NOT NULL
+            )""".trimIndent(),
+        )
+        db.execSQL("CREATE INDEX now_playing_history_played_at ON now_playing_history(played_at DESC)")
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -557,6 +580,86 @@ class PlaylistStore(context: Context) : SQLiteOpenHelper(
             }.toMutableList()
         }
 
+    /**
+     * Inserts a captured play, or moves an existing video to the top by refreshing its
+     * timestamp. Returns the new row id, or -1 if the entry had no usable video id.
+     */
+    @Synchronized
+    fun recordNowPlaying(entry: NowPlayingEntry): Long {
+        if (entry.videoId.isBlank()) return -1L
+        val playedAt = if (entry.playedAt > 0L) entry.playedAt else System.currentTimeMillis()
+        val values = ContentValues().apply {
+            put("video_id", entry.videoId)
+            put("title", entry.title)
+            put("artist", entry.artist)
+            put("album", entry.album)
+            put("duration_ms", entry.durationMs.coerceAtLeast(0L))
+            put("artwork_url", entry.artworkUrl)
+            put("source_package", entry.sourcePackage)
+            put("played_at", playedAt)
+        }
+        // video_id is UNIQUE, so a replay replaces the old row and keeps one entry per video.
+        return writableDatabase.replace("now_playing_history", null, values)
+    }
+
+    @Synchronized
+    fun getNowPlayingHistory(limit: Int): List<NowPlayingEntry> {
+        require(limit in 1..500) { "Now playing history page size must be between 1 and 500" }
+        return readableDatabase.query(
+            "now_playing_history",
+            arrayOf(
+                "id", "video_id", "title", "artist", "album", "duration_ms",
+                "artwork_url", "source_package", "played_at",
+            ),
+            null,
+            null,
+            null,
+            null,
+            "played_at DESC, id DESC",
+            limit.toString(),
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(
+                        NowPlayingEntry(
+                            id = cursor.getLong(0),
+                            videoId = cursor.getString(1),
+                            title = cursor.getString(2),
+                            artist = cursor.getString(3),
+                            album = cursor.getString(4),
+                            durationMs = cursor.getLong(5),
+                            artworkUrl = if (cursor.isNull(6)) null else cursor.getString(6),
+                            sourcePackage = cursor.getString(7),
+                            playedAt = cursor.getLong(8),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    @Synchronized
+    fun deleteNowPlayingEntry(id: Long): Boolean =
+        writableDatabase.delete("now_playing_history", "id = ?", arrayOf(id.toString())) > 0
+
+    @Synchronized
+    fun clearNowPlayingHistory(): Int = writableDatabase.delete("now_playing_history", null, null)
+
+    @Synchronized
+    fun videoIsInNowPlayingHistory(videoId: String): Boolean {
+        if (videoId.isBlank()) return false
+        return readableDatabase.query(
+            "now_playing_history",
+            arrayOf("id"),
+            "video_id = ?",
+            arrayOf(videoId),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor -> cursor.moveToFirst() }
+    }
+
     private fun rewritePositions(db: SQLiteDatabase, playlistId: Long, tracks: List<String>) {
         tracks.forEachIndexed { index, trackUri ->
             val values = ContentValues().apply { put("position", index.toLong()) }
@@ -573,6 +676,6 @@ class PlaylistStore(context: Context) : SQLiteOpenHelper(
 
     companion object {
         private const val DATABASE_NAME = "playlists.db"
-        private const val DATABASE_VERSION = 12
+        private const val DATABASE_VERSION = 13
     }
 }

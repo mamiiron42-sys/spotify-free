@@ -2,6 +2,7 @@ package io.github.ytdlpandroid.repository
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.github.ytdlpandroid.NowPlayingEntry
 import io.github.ytdlpandroid.PlaybackHistoryEntry
 import io.github.ytdlpandroid.PlaylistStore
 import io.github.ytdlpandroid.SavedPlaylist
@@ -140,6 +141,30 @@ class PlaylistRepository @Inject constructor(
      */
     suspend fun deletePlaybackHistoryEntry(id: Long): Boolean = withContext(Dispatchers.IO) {
         playlistStore.deletePlaybackHistoryEntry(id)
+    }
+
+    /**
+     * Records a track captured from another app's media session (e.g. YouTube), keyed by
+     * video id so replays refresh the timestamp instead of duplicating rows.
+     */
+    suspend fun recordNowPlaying(entry: NowPlayingEntry): Long = withContext(Dispatchers.IO) {
+        playlistStore.recordNowPlaying(entry)
+    }
+
+    suspend fun getNowPlayingHistory(limit: Int): List<NowPlayingEntry> = withContext(Dispatchers.IO) {
+        playlistStore.getNowPlayingHistory(limit)
+    }
+
+    suspend fun deleteNowPlayingEntry(id: Long): Boolean = withContext(Dispatchers.IO) {
+        playlistStore.deleteNowPlayingEntry(id)
+    }
+
+    suspend fun clearNowPlayingHistory(): Int = withContext(Dispatchers.IO) {
+        playlistStore.clearNowPlayingHistory()
+    }
+
+    suspend fun videoIsInNowPlayingHistory(videoId: String): Boolean = withContext(Dispatchers.IO) {
+        playlistStore.videoIsInNowPlayingHistory(videoId)
     }
     
     /**

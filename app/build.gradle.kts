@@ -34,6 +34,8 @@ android {
 }
 
 dependencies {
+    // Unit tests for pure logic (no Android framework classes touched).
+    testImplementation("junit:junit:4.13.2")
     // 6.0-2.LTS is the last release line shipping all four ABIs, including armeabi-v7a
     // for 32-bit devices (the maintained fork only publishes arm64-v8a and x86_64).
     // Same com.arthenica.ffmpegkit Java package, so the conversion code is unchanged.

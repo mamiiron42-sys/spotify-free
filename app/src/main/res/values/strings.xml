@@ -292,4 +292,21 @@
     <string name="library_group_all">All tracks</string>
     <string name="playlist_row_accessibility">Playlist %1$s, %2$d songs</string>
     <string name="playlist_menu_accessibility">Options for playlist %1$s</string>
+
+    <!-- Now-playing capture -->
+    <string name="now_playing_listener_label">Listening capture</string>
+    <string name="now_playing_section">From YouTube</string>
+    <string name="now_playing_enable_title">See what you play on YouTube</string>
+    <string name="now_playing_enable_body">Grant notification access and this app records what YouTube and YouTube Music play, so your recommendations and downloads start from your own listening.</string>
+    <string name="now_playing_enable_action">Grant access</string>
+    <string name="now_playing_enable_pending">Waiting for access…</string>
+    <string name="now_playing_empty">Nothing captured yet. Play something on YouTube and it will show up here.</string>
+    <string name="now_playing_clear">Clear captured history</string>
+    <string name="now_playing_clear_confirm">Remove all captured playback from YouTube?</string>
+    <string name="now_playing_clear_failed">Could not clear captured history</string>
+    <string name="now_playing_remove_failed">Could not remove this entry</string>
+    <string name="now_playing_download">Download</string>
+    <string name="now_playing_download_queued">Downloading %1$s</string>
+    <string name="now_playing_search_failed">Could not find %1$s</string>
+    <string name="now_playing_source_other">Played elsewhere</string>
 </resources>
