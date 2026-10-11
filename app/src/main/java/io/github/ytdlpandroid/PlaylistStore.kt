@@ -69,6 +69,7 @@ class PlaylistStore(context: Context) : SQLiteOpenHelper(
             )""".trimIndent(),
         )
         createPlaybackHistorySchema(db)
+        createNowPlayingHistorySchema(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -103,8 +104,8 @@ class PlaylistStore(context: Context) : SQLiteOpenHelper(
         }
         if (oldVersion < 3) createPlaybackHistorySchema(db)
         if (oldVersion < 12) mergeMediaStoreAliases(db)
-        if (oldVersion < 13) createNowPlayingHistorySchema(db)
-        if (oldVersion < 1 || newVersion > 13) {
+        if (oldVersion < 14) createNowPlayingHistorySchema(db)
+        if (oldVersion < 1 || newVersion > 14) {
             error("No playlist database migration exists from version $oldVersion")
         }
     }
@@ -192,8 +193,10 @@ class PlaylistStore(context: Context) : SQLiteOpenHelper(
      * playback, and must never be treated as library tracks.
      */
     private fun createNowPlayingHistorySchema(db: SQLiteDatabase) {
+        // IF NOT EXISTS so this can also repair a database created by the build that shipped
+        // without the table in onCreate.
         db.execSQL(
-            """CREATE TABLE now_playing_history (
+            """CREATE TABLE IF NOT EXISTS now_playing_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 video_id TEXT NOT NULL UNIQUE,
                 title TEXT NOT NULL,
@@ -205,7 +208,7 @@ class PlaylistStore(context: Context) : SQLiteOpenHelper(
                 played_at INTEGER NOT NULL
             )""".trimIndent(),
         )
-        db.execSQL("CREATE INDEX now_playing_history_played_at ON now_playing_history(played_at DESC)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS now_playing_history_played_at ON now_playing_history(played_at DESC)")
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -676,6 +679,6 @@ class PlaylistStore(context: Context) : SQLiteOpenHelper(
 
     companion object {
         private const val DATABASE_NAME = "playlists.db"
-        private const val DATABASE_VERSION = 13
+        private const val DATABASE_VERSION = 14
     }
 }

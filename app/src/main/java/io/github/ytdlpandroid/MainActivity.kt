@@ -1043,7 +1043,15 @@ class MainActivity :
             NowPlayingListenerService.isGranted(this@MainActivity)
 
         override suspend fun loadCapturedEntries(): List<NowPlayingEntry> =
-            withContext(Dispatchers.IO) { playlists.getNowPlayingHistory(NOW_PLAYING_HISTORY_LIMIT) }
+            withContext(Dispatchers.IO) {
+                try {
+                    playlists.getNowPlayingHistory(NOW_PLAYING_HISTORY_LIMIT)
+                } catch (error: Exception) {
+                    // The capture shelf is optional; never let its storage take the app down.
+                    android.util.Log.e("MainActivity", "Could not load captured history", error)
+                    emptyList()
+                }
+            }
 
         override suspend fun removeCapturedEntry(id: Long): Boolean =
             withContext(Dispatchers.IO) {
