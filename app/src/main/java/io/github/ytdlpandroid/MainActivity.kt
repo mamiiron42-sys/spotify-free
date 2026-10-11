@@ -1783,11 +1783,18 @@ class MainActivity :
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                 clearSearchButton.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
                 searchBrowseSection?.visibility = if (s.isNullOrEmpty()) View.VISIBLE else View.GONE
-                // Search as you type, debounced, so results track the query without a tap.
+                // Search as you type, debounced. A single character is not a query yet, so
+                // short input waits for the Search button or the Enter key instead of firing
+                // a request per keystroke that only ever matches nothing.
                 searchDebounceJob?.cancel()
+                val typed = s?.toString().orEmpty()
                 searchDebounceJob = lifecycleScope.launch {
                     delay(SEARCH_AUTO_DEBOUNCE_MS)
-                    if (s.isNullOrBlank()) searchViewModel.clearSearch() else searchMusic(s.toString())
+                    when {
+                        typed.isBlank() -> searchViewModel.clearSearch()
+                        typed.trim().length >= MIN_AUTO_SEARCH_LENGTH -> searchMusic(typed)
+                        else -> Unit
+                    }
                 }
             }
 
@@ -2191,38 +2198,49 @@ class MainActivity :
     }
 
     /** Spotify pinned "Liked Songs" card shown at the top of the library. */
+    /**
+     * Pinned Liked Songs row. Deliberately the same shape as every other playlist row: a
+     * small purple tile, two lines of text, and a play affordance. It used to be a
+     * full-width gradient card, which dominated the library for no information gain.
+     */
     private fun buildLibraryLikedSongsCard(): View {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = likedSongsGradient(dp(8).toFloat())
+            background = roundedBackground(COLOR_SURFACE, dp(8))
             isClickable = true
             isFocusable = true
-            setPadding(dp(14), dp(12), dp(10), dp(12))
+            setPadding(dp(10), dp(8), dp(10), dp(8))
             contentDescription = getString(R.string.liked_songs)
             setOnClickListener {
                 animateSuccess(this)
                 showTab(R.string.nav_playlists)
             }
         }
-        val glyph = iconView(R.drawable.ic_heart_filled, 26, Color.WHITE)
-        card.addView(glyph, LinearLayout.LayoutParams(dp(44), dp(44)))
+        val tile = FrameLayout(this).apply {
+            background = roundedBackground(COLOR_ACCENT_SECONDARY, dp(4))
+        }
+        tile.addView(
+            iconView(R.drawable.ic_heart_filled, 22, Color.WHITE),
+            FrameLayout.LayoutParams(MATCH, MATCH),
+        )
+        card.addView(tile, LinearLayout.LayoutParams(dp(44), dp(44)))
         val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         labels.addView(
             TextView(this).apply {
                 text = getString(R.string.liked_songs)
-                textSize = 16f
+                textSize = 15f
                 setTypeface(null, android.graphics.Typeface.BOLD)
-                setTextColor(Color.WHITE)
+                setTextColor(COLOR_TEXT)
             },
             LinearLayout.LayoutParams(0, WRAP, 1f),
         )
         libraryLikedSongsSubtitle = TextView(this).apply {
-            textSize = 11f
-            setTextColor(Color.argb(220, 255, 255, 255))
+            textSize = 12f
+            setTextColor(COLOR_MUTED)
         }
         labels.addView(libraryLikedSongsSubtitle, LinearLayout.LayoutParams(0, WRAP, 1f))
-        card.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(8) })
+        card.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) })
         val playButton = iconButton(
             iconRes = R.drawable.ic_play,
             description = getString(R.string.play),
@@ -3172,12 +3190,10 @@ class MainActivity :
     private fun searchMusic(queryOverride: String? = null) {
         val query = (queryOverride ?: searchInput.text.toString()).trim()
         showTab(R.string.nav_search)
-        if (query.isNotEmpty()) {
-            // Only rewrite the field when the trimmed text differs, otherwise the
-            // search-as-you-type watcher would re-enter and restart the search forever.
-            if (searchInput.text.toString() != query) searchInput.setText(query)
-            searchBrowseSection?.visibility = View.GONE
-        }
+        if (query.isNotEmpty()) searchBrowseSection?.visibility = View.GONE
+        // The query is never written back into the field: trimming used to rewrite the
+        // EditText on every keystroke, which deleted the space the user had just typed and
+        // moved the caret, so multi-word queries could not be entered at all.
         searchViewModel.search(query)
     }
 
@@ -5130,24 +5146,61 @@ class MainActivity :
         val uris = mutableListOf<Uri>()
         data.clipData?.let { clip -> for (i in 0 until clip.itemCount) uris.add(clip.getItemAt(i).uri) }
         data.data?.let { uris.add(it) }
+        if (uris.isEmpty()) {
+            Toast.makeText(this, getString(R.string.import_none_selected), Toast.LENGTH_SHORT).show()
+            return
+        }
         var retained = importedUris.toMutableSet()
         var failed = 0
+        var added = 0
+        val alreadyImported = retained.toSet()
         uris.distinct().forEach { uri ->
             try {
-                if (contentResolver.getType(uri)?.startsWith("audio/") != true) {
+                // Some document providers report a null MIME type for unopened files, so fall
+                // back to the extension. Treating null as "not audio" is what made the picker
+                // silently import nothing.
+                if (!isAudioCandidate(uri)) {
                     failed++
                     return@forEach
                 }
+                val canonical = uri.toString()
+                if (canonical in alreadyImported) return@forEach
                 contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                retained.add(uri.toString())
+                retained.add(canonical)
+                added++
             } catch (_: SecurityException) {
                 failed++
             }
         }
         getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit().putStringSet(KEY_IMPORTED, retained).apply()
-        if (failed > 0) Toast.makeText(this, getString(R.string.import_permission_warning, failed), Toast.LENGTH_LONG)
-            .show()
+        when {
+            failed > 0 -> Toast.makeText(
+                this,
+                getString(R.string.import_permission_warning, failed),
+                Toast.LENGTH_LONG,
+            ).show()
+
+            added == 0 -> Toast.makeText(
+                this,
+                getString(R.string.import_already_imported),
+                Toast.LENGTH_SHORT,
+            ).show()
+
+            else -> Toast.makeText(
+                this,
+                getString(R.string.import_succeeded, added),
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
         refreshLibrary()
+    }
+
+    /** True when the document is audio, by MIME type or, when that is unavailable, extension. */
+    private fun isAudioCandidate(uri: Uri): Boolean {
+        val mimeType = contentResolver.getType(uri)
+        if (mimeType != null) return mimeType.startsWith("audio/")
+        val name = uri.lastPathSegment?.substringAfterLast('/')?.lowercase() ?: return false
+        return AUDIO_EXTENSIONS.any { name.endsWith(it) }
     }
 
     @Deprecated("Deprecated in Android API; required for ACTION_OPEN_DOCUMENT callback")
@@ -5247,6 +5300,7 @@ class MainActivity :
         private const val MAX_CONCURRENT_DOWNLOADS = 10
         private const val MAX_CONTENT_WIDTH_DP = 760
         private const val SEARCH_AUTO_DEBOUNCE_MS = 350L
+        private const val MIN_AUTO_SEARCH_LENGTH = 2
         private const val LIBRARY_SECTION_SONGS = 0
         private const val LIBRARY_SECTION_PLAYLISTS = 1
         /** Group ids for the combined sort/group popup in the library header. */
