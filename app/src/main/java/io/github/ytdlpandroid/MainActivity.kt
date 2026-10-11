@@ -46,6 +46,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.viewModels
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleCoroutineScope
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.DefaultItemAnimator
@@ -110,7 +111,7 @@ private data class LibraryScreen(
 /**
  * Everything the playlists tab needs to render, derived from `PlaylistViewModel` in one pass.
  */
-private data class PlaylistScreen(
+internal data class PlaylistScreen(
     val playlists: List<SavedPlaylist>,
     val error: String?,
 )
@@ -121,8 +122,7 @@ class MainActivity :
     DownloadService.Listener,
     SearchResultAdapter.Callbacks,
     DownloadJobAdapter.Callbacks,
-    LibraryAdapter.Callbacks,
-    PlaylistAdapter.Callbacks {
+    LibraryAdapter.Callbacks {
     private val searchViewModel: SearchViewModel by viewModels()
     private val downloadViewModel: DownloadViewModel by viewModels()
     private val libraryViewModel: LibraryViewModel by viewModels()
@@ -133,7 +133,6 @@ class MainActivity :
     private lateinit var searchButton: Button
     private val jobAdapter = DownloadJobAdapter(this)
     private val libraryAdapter = LibraryAdapter(this)
-    private val playlistAdapter = PlaylistAdapter(this)
     private var pendingExportPlaylistId: Long? = null
     private lateinit var homeCategories: LinearLayout
     private lateinit var homeSubcategories: LinearLayout
@@ -168,12 +167,6 @@ class MainActivity :
     private var libraryLikedSongsSubtitle: TextView? = null
     private var librarySection = LIBRARY_SECTION_SONGS
     private lateinit var librarySectionChips: List<TextView>
-    private lateinit var playlistList: RecyclerView
-    private lateinit var playlistSearch: EditText
-    private lateinit var playlistRoot: LinearLayout
-    private var selectedPlaylistId: Long? = null
-    /** Tab to return to when the playlist page is closed (e.g. Home when opened from a Home card). */
-    private var playlistReturnTab: Int? = null
     /**
      * Back from the full-screen player returns to the tab the user came from. Without this,
      * Back exits the app from a surface the user navigated into.
@@ -185,11 +178,17 @@ class MainActivity :
         }
     }
 
-    private val playlistDetailBackCallback = object : OnBackPressedCallback(false) {
-        override fun handleOnBackPressed() {
-            closePlaylistDetail()
+    /**
+     * Back from the open playlist page returns to the list. The activity owns the dispatcher,
+     * so the section only reports whether it consumed the press and disables this callback
+     * itself through the host.
+     */
+    private val playlistDetailBackCallback: OnBackPressedCallback =
+        object : OnBackPressedCallback(false) {
+            override fun handleOnBackPressed() {
+                playlistsSection.handleBackPressed()
+            }
         }
-    }
     private lateinit var playerArtwork: ImageView
     private lateinit var playerTitle: TextView
     private lateinit var playerArtist: TextView
@@ -436,7 +435,7 @@ class MainActivity :
         buildLibraryScreen(libraryScreen)
         content.addView(libraryScreen, FrameLayout.LayoutParams(MATCH, MATCH))
         val playlistsScreen = newScrollScreen()
-        buildPlaylistsScreen(playlistsScreen)
+        playlistsSection.attachTo(playlistsScreen)
         content.addView(playlistsScreen, FrameLayout.LayoutParams(MATCH, MATCH))
         val playerScreen = newScrollScreen()
         buildPlayerScreen(playerScreen)
@@ -1209,7 +1208,7 @@ class MainActivity :
             )
             setOnClickListener {
                 animateSuccess(this)
-                openPlaylist(playlist.id)
+                playlistsSection.openPlaylist(playlist.id)
             }
         }
         card.addView(
@@ -1300,13 +1299,13 @@ class MainActivity :
                 homeLibraryContent.addView(Button(this).apply {
                     text = getString(R.string.home_playlists_create_action)
                     styleActionButton(this, true)
-                    setOnClickListener { promptCreatePlaylist() }
+                    setOnClickListener { playlistsSection.promptCreatePlaylist() }
                 }, matchWidth().apply { bottomMargin = dp(8) })
             } else if (homeSubcategory == 2) {
                 homeLibraryContent.addView(Button(this).apply {
                     text = getString(R.string.import_playlist_m3u)
                     styleActionButton(this, true)
-                    setOnClickListener { launchPlaylistImport() }
+                    setOnClickListener { playlistsSection.launchPlaylistImport() }
                 }, matchWidth().apply { bottomMargin = dp(8) })
             }
             val saved = try {
@@ -1991,7 +1990,7 @@ class MainActivity :
     /**
      * Playlists rendered inline as Spotify-style rounded rows.
      *
-     * Uses plain views rather than [playlistList]'s adapter so both playlist
+     * Uses plain views rather than the playlists screen's adapter so both playlist
      * surfaces can be alive at once without sharing a RecyclerView adapter.
      */
     private fun buildLibraryPlaylistsContent(root: LinearLayout) {
@@ -2023,7 +2022,7 @@ class MainActivity :
                 )
                 setOnClickListener {
                     animateSuccess(this)
-                    openPlaylist(playlist.id)
+                    playlistsSection.openPlaylist(playlist.id)
                 }
             }
             val isLikedSongs = playlist.name.equals(
@@ -2089,7 +2088,7 @@ class MainActivity :
                 tint = COLOR_MUTED,
                 sizeDp = 40,
                 insetDp = 9,
-            ) { showPlaylistMenu(playlist, row) }
+            ) { playlistsSection.showPlaylistMenu(playlist, row) }
             row.addView(playlistOverflow, LinearLayout.LayoutParams(dp(40), dp(40)))
             root.addView(row, matchWidth().apply {
                 topMargin = dp(8)
@@ -2503,78 +2502,101 @@ class MainActivity :
     override fun onLibraryTrackMenu(track: AudioTrack, anchor: View) =
         showTrackMenu(track, anchor)
 
-    // ── PlaylistAdapter.Callbacks ─────────────────────────────────────────────
+    // ── Playlists screen ───────────────────────────────────────────────────
 
-    override fun onPlaylistOpen(playlist: SavedPlaylist) = openPlaylist(playlist.id)
+    /**
+     * The playlists screen is owned by [PlaylistsScreen]; this host is everything it needs.
+     * The activity keeps the playlist store, the ViewModels, and the tab, back-press, and
+     * document-picker wiring, so the section never reaches back into it.
+     */
+    private val playlistsHost = object : PlaylistsScreen.Host {
+        override val playlistViewModel: PlaylistViewModel
+            get() = this@MainActivity.playlistViewModel
 
-    override fun onPlaylistMenu(playlist: SavedPlaylist, anchor: View) =
-        showPlaylistMenu(playlist, anchor)
+        override val libraryViewModel: LibraryViewModel
+            get() = this@MainActivity.libraryViewModel
 
-    override fun onPlaylistClearSearch() {
-        if (::playlistSearch.isInitialized) playlistSearch.text.clear()
-    }
+        override val playlists: PlaylistStore
+            get() = this@MainActivity.playlists
 
-    private fun buildPlaylistsScreen(scroll: ScrollView) {
-        playlistRoot = scrollContent(scroll)
-        buildPlaylistListPage()
-    }
+        override val playbackService: PlaybackService?
+            get() = this@MainActivity.playbackService
 
-    private fun buildPlaylistListPage() {
-        val root = playlistRoot
-        root.removeAllViews()
-        root.setBackgroundColor(COLOR_BACKGROUND)
-        root.addView(sectionTitle(getString(R.string.playlists_title)))
-        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        actions.addView(Button(this).apply {
-            text = getString(R.string.create_playlist)
-            styleActionButton(this, true)
-            setOnClickListener { promptCreatePlaylist() }
-        }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginEnd = dp(6) })
-        actions.addView(Button(this).apply {
-            text = getString(R.string.import_playlist_m3u)
-            styleActionButton(this, false)
-            setOnClickListener { launchPlaylistImport() }
-        }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(6) })
-        root.addView(actions, matchWidth())
+        override val lifecycleScope: LifecycleCoroutineScope
+            get() = this@MainActivity.lifecycleScope
 
-        playlistSearch = EditText(this).apply {
-            hint = getString(R.string.playlist_search_hint)
-            isSingleLine = true
-            setTextColor(COLOR_TEXT)
-            setHintTextColor(COLOR_MUTED)
-            setPadding(dp(14), 0, dp(14), 0)
-            background = roundedBackground(COLOR_SURFACE, dp(14))
-            minHeight = dp(48)
-            addTextChangedListener(object : android.text.TextWatcher {
-                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                    renderPlaylists(currentPlaylistScreen())
-                }
+        override val currentTab: Int
+            get() = this@MainActivity.currentTab
 
-                override fun afterTextChanged(s: android.text.Editable?) {}
-            })
+        override fun resolveTrack(raw: String): AudioTrack? =
+            this@MainActivity.resolvePlaylistTrack(raw)
+
+        override fun showError(message: String) = this@MainActivity.showError(message)
+
+        override fun showSnackbar(message: String, actionLabel: String?, action: (() -> Unit)?) =
+            this@MainActivity.showSnackbar(message, actionLabel, action)
+
+        override fun showTab(label: Int) = this@MainActivity.showTab(label)
+
+        override fun enqueueUrls(urls: List<String>, showStatus: Boolean) =
+            this@MainActivity.enqueueUrls(urls, showStatus)
+
+        override fun loadPlaylistAndPlay(id: Long) = this@MainActivity.loadPlaylistAndPlay(id)
+
+        override fun playTrackList(tracks: List<AudioTrack>, index: Int) =
+            this@MainActivity.playTrackList(tracks, index)
+
+        override fun choosePlaylistForTrack(track: AudioTrack) =
+            this@MainActivity.choosePlaylistForTrack(track)
+
+        override fun showTrackDetails(track: AudioTrack) = this@MainActivity.showTrackDetails(track)
+
+        override fun refreshPlaylists() = this@MainActivity.refreshPlaylists()
+
+        override fun runOnMain(block: () -> Unit) {
+            runOnUiThread { if (!destroyed) block() }
         }
-        root.addView(playlistSearch, matchWidth().apply { topMargin = dp(12) })
 
-        playlistList = RecyclerView(this).apply {
-            adapter = playlistAdapter
-            layoutManager = LinearLayoutManager(this@MainActivity)
-            isNestedScrollingEnabled = false
-            itemAnimator = DefaultItemAnimator().apply { supportsChangeAnimations = false }
+        override fun refreshPlaylistConsumers() {
+            updateLikedSongsCard()
+            if (librarySection == LIBRARY_SECTION_PLAYLISTS && ::libraryContent.isInitialized) {
+                rebuildLibraryContent()
+            }
         }
-        root.addView(playlistList, matchWidth().apply { topMargin = dp(8) })
-        renderPlaylists(currentPlaylistScreen())
+
+        override fun homeShowingPlaylists() = homeCategory == HOME_CATEGORY_PLAYLISTS
+
+        override fun renderHomeLibrary() = this@MainActivity.renderHomeLibrary()
+
+        override fun setPlaylistDetailBackEnabled(enabled: Boolean) {
+            playlistDetailBackCallback.isEnabled = enabled
+        }
+
+        override fun requestM3uExport(fileName: String, playlistId: Long) {
+            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "audio/x-mpegurl"
+                putExtra(Intent.EXTRA_TITLE, fileName)
+            }
+            startActivityForResult(intent, REQUEST_EXPORT_M3U)
+            pendingExportPlaylistId = playlistId
+        }
+
+        override fun requestM3uImport() {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "audio/x-mpegurl"
+                putExtra(
+                    Intent.EXTRA_MIME_TYPES,
+                    arrayOf("audio/x-mpegurl", "audio/mpegurl", "text/plain"),
+                )
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivityForResult(intent, REQUEST_IMPORT_M3U)
+        }
     }
 
-    private fun launchPlaylistImport() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "audio/x-mpegurl"
-            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("audio/x-mpegurl", "audio/mpegurl", "text/plain"))
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        startActivityForResult(intent, REQUEST_IMPORT_M3U)
-    }
+    private val playlistsSection by lazy { PlaylistsScreen(this, playlistsHost) }
 
     private fun buildPlayerScreen(scroll: ScrollView) {
         val root = scrollContent(scroll)
@@ -3752,84 +3774,6 @@ class MainActivity :
             .setPositiveButton(android.R.string.ok, null).show()
     }
 
-    private fun promptCreatePlaylist(onCreated: (Long) -> Unit = {}) {
-        val input = EditText(this).apply {
-            hint = getString(R.string.playlist_name)
-            isSingleLine = true
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or
-                    android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-        }
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(getString(R.string.create_playlist))
-            .setView(input)
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.create, null)
-            .create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val name = input.text.toString().trim()
-                if (name.isEmpty()) {
-                    input.error = getString(R.string.playlist_name_required)
-                    return@setOnClickListener
-                }
-                try {
-                    val duplicate = playlists.getPlaylists().any { it.name.equals(name, ignoreCase = true) }
-                    if (duplicate) {
-                        input.error = getString(R.string.playlist_name_exists)
-                        return@setOnClickListener
-                    }
-                    val id = playlists.createPlaylist(name)
-                    dialog.dismiss()
-                    refreshPlaylists()
-                    onCreated(id)
-                } catch (error: Exception) {
-                    showError(getString(R.string.playlist_error, error.localizedMessage ?: ""))
-                }
-            }
-        }
-        dialog.show()
-    }
-
-    private fun promptRenamePlaylist(playlist: SavedPlaylist) {
-        val input = EditText(this).apply {
-            hint = getString(R.string.playlist_name)
-            isSingleLine = true
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or
-                    android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            setText(playlist.name)
-            setSelection(text.length)
-        }
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(getString(R.string.rename_playlist))
-            .setView(input)
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.rename, null)
-            .create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val name = input.text.toString().trim()
-                if (name.isEmpty()) {
-                    input.error = getString(R.string.playlist_name_required)
-                    return@setOnClickListener
-                }
-                if (name == playlist.name) {
-                    dialog.dismiss()
-                    return@setOnClickListener
-                }
-                val duplicate = playlistViewModel.playlists.value.any {
-                    it.id != playlist.id && it.name.equals(name, ignoreCase = true)
-                }
-                if (duplicate || name.equals(getString(R.string.liked_songs), ignoreCase = true)) {
-                    input.error = getString(R.string.playlist_name_exists)
-                    return@setOnClickListener
-                }
-                playlistViewModel.renamePlaylist(playlist, name)
-                dialog.dismiss()
-            }
-        }
-        dialog.show()
-    }
-
     private fun refreshPlaylists() {
         playlistViewModel.refreshPlaylists()
     }
@@ -3853,93 +3797,8 @@ class MainActivity :
                     playlistViewModel.playlists,
                     playlistViewModel.playlistError,
                 ) { playlists, error -> PlaylistScreen(playlists, error) }
-                    .collect(::renderPlaylists)
+                    .collect(playlistsSection::renderPlaylists)
             }
-        }
-    }
-
-    private fun currentPlaylistScreen() = PlaylistScreen(
-        playlists = playlistViewModel.playlists.value,
-        error = playlistViewModel.playlistError.value,
-    )
-
-    private fun playlistRows(
-        saved: List<SavedPlaylist>,
-        error: String?,
-        query: String,
-    ): List<PlaylistRow> {
-        if (error != null) {
-            return listOf(PlaylistRow.Message(getString(R.string.playlist_error, error)))
-        }
-        val filtered = saved.filter { it.name.contains(query, ignoreCase = true) }
-        if (filtered.isEmpty()) {
-            val rows = ArrayList<PlaylistRow>()
-            rows += PlaylistRow.Message(
-                getString(
-                    if (saved.isEmpty()) R.string.playlists_empty
-                    else R.string.playlists_no_matches,
-                ),
-            )
-            if (saved.isNotEmpty()) rows += PlaylistRow.ClearSearch
-            return rows
-        }
-        return filtered.map { playlist ->
-            PlaylistRow.Playlist(
-                playlist = playlist,
-                cover = playlist.tracks.firstNotNullOfOrNull { uri -> resolvePlaylistTrack(uri) },
-            )
-        }
-    }
-
-    private fun renderPlaylists(screen: PlaylistScreen) {
-        updateLikedSongsCard()
-        if (librarySection == LIBRARY_SECTION_PLAYLISTS && ::libraryContent.isInitialized) {
-            rebuildLibraryContent()
-        }
-        if (!::playlistRoot.isInitialized) {
-            if (homeCategory == HOME_CATEGORY_PLAYLISTS) renderHomeLibrary()
-            return
-        }
-        val selectedId = selectedPlaylistId
-        if (selectedId != null) {
-            val selected = screen.playlists.firstOrNull { it.id == selectedId }
-            if (selected == null) {
-                selectedPlaylistId = null
-                playlistDetailBackCallback.isEnabled = false
-                buildPlaylistListPage()
-            } else {
-                renderPlaylistDetail(selected)
-            }
-        } else if (::playlistList.isInitialized) {
-            val query = if (::playlistSearch.isInitialized) playlistSearch.text.toString().trim() else ""
-            playlistAdapter.submitList(playlistRows(screen.playlists, screen.error, query))
-        }
-        if (homeCategory == HOME_CATEGORY_PLAYLISTS) renderHomeLibrary()
-    }
-
-    private fun showPlaylistMenu(playlist: SavedPlaylist, anchor: View) {
-        android.widget.PopupMenu(this, anchor).apply {
-            menu.add(0, 0, 0, R.string.play)
-            menu.add(0, 1, 1, R.string.add_tracks)
-            menu.add(0, 2, 2, R.string.share_playlist)
-            menu.add(0, 5, 2, R.string.export_playlist_m3u)
-            // Liked Songs is found by name, so renaming it would orphan the like button.
-            if (!playlist.name.equals(getString(R.string.liked_songs), ignoreCase = true)) {
-                menu.add(0, 4, 3, R.string.rename_playlist)
-            }
-            menu.add(0, 3, 4, R.string.delete)
-            setOnMenuItemClickListener { item ->
-                when (item.itemId) {
-                    0 -> loadPlaylistAndPlay(playlist.id)
-                    1 -> chooseTracksForPlaylist(playlist.id)
-                    2 -> sharePlaylistM3u(playlist)
-                    5 -> exportPlaylistM3u(playlist)
-                    3 -> confirmDeletePlaylist(playlist.id, playlist.name)
-                    4 -> promptRenamePlaylist(playlist)
-                }
-                true
-            }
-            show()
         }
     }
 
@@ -4013,7 +3872,7 @@ class MainActivity :
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
                 dialog.dismiss()
-                promptCreatePlaylist { playlistId ->
+                playlistsSection.promptCreatePlaylist { playlistId ->
                     val created = playlists.getPlaylists().firstOrNull { it.id == playlistId }
                     if (created == null) showError(getString(R.string.playlist_track_failed))
                     else addTrackToPlaylist(playlistId, created.name, track, prepareForSave)
@@ -4041,353 +3900,9 @@ class MainActivity :
                 Toast.makeText(this, getString(R.string.playlist_track_already_added), Toast.LENGTH_SHORT).show()
             }
             refreshPlaylists()
-            playlistList.findViewWithTag<View>("playlist-$playlistId")?.let(::animateSuccess)
+            playlistsSection.animatePlaylistRow(playlistId)
         } catch (error: Exception) {
             showError(error.localizedMessage ?: getString(R.string.playlist_track_failed))
-        }
-    }
-
-    private fun chooseTracksForPlaylist(id: Long) {
-        val libraryTracks = libraryViewModel.tracks.value
-        if (libraryTracks.isEmpty()) {
-            Toast.makeText(this, getString(R.string.library_empty), Toast.LENGTH_SHORT).show(); return
-        }
-        val selectedUris = linkedSetOf<String>()
-        val selectedCount = TextView(this).apply {
-            text = getString(R.string.selected_tracks, 0)
-            textSize = 13f
-            setTextColor(COLOR_MUTED)
-            setPadding(0, dp(8), 0, dp(4))
-        }
-        val search = EditText(this).apply {
-            hint = getString(R.string.library_search_hint)
-            isSingleLine = true
-            setTextColor(COLOR_TEXT)
-            setHintTextColor(COLOR_MUTED)
-            setPadding(dp(14), 0, dp(14), 0)
-            background = roundedBackground(COLOR_SURFACE, dp(12))
-            minHeight = dp(48)
-        }
-        val trackRows = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val trackScroll = ScrollView(this).apply { addView(trackRows) }
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(search, matchWidth())
-            addView(selectedCount, matchWidth())
-            addView(trackScroll, LinearLayout.LayoutParams(MATCH, dp(320)))
-        }
-        var addButton: Button? = null
-        fun renderTrackChoices(query: String) {
-            trackRows.removeAllViews()
-            val matches = libraryTracks.filter { track ->
-                query.isBlank() || track.title.contains(query, true) ||
-                        track.artist.contains(query, true) || track.album.contains(query, true)
-            }
-            if (matches.isEmpty()) {
-                trackRows.addView(emptyMessage(getString(R.string.library_no_filter_matches)))
-                return
-            }
-            matches.forEach { track ->
-                val uri = track.uri.toString()
-                val checkBox = CheckBox(this).apply {
-                    text = "${track.title} — ${track.artist}"
-                    isChecked = uri in selectedUris
-                    minHeight = dp(48)
-                    setTextColor(COLOR_TEXT)
-                    buttonTintList = android.content.res.ColorStateList.valueOf(COLOR_ACCENT)
-                    setOnCheckedChangeListener { _, checked ->
-                        if (checked) selectedUris.add(uri) else selectedUris.remove(uri)
-                        selectedCount.text = getString(R.string.selected_tracks, selectedUris.size)
-                        addButton?.isEnabled = selectedUris.isNotEmpty()
-                    }
-                }
-                trackRows.addView(checkBox, matchWidth())
-            }
-        }
-        search.addTextChangedListener(object : android.text.TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                renderTrackChoices(s?.toString().orEmpty())
-            }
-
-            override fun afterTextChanged(s: android.text.Editable?) {}
-        })
-        renderTrackChoices("")
-        val dialog = AlertDialog.Builder(this).setTitle(getString(R.string.select_tracks))
-            .setView(content)
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.add_tracks) { _, _ ->
-                try {
-                    val addedCount = playlists.addTracks(id, selectedUris.toList())
-                    refreshPlaylists()
-                    playlistList.findViewWithTag<View>("playlist-$id")?.let(::animateSuccess)
-                    if (addedCount > 0) {
-                        Toast.makeText(
-                            this,
-                            getString(R.string.tracks_added_to_playlist, addedCount),
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                } catch (error: Exception) {
-                    showError(error.localizedMessage ?: getString(R.string.playlist_track_failed))
-                }
-            }.show()
-        addButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-        addButton?.isEnabled = selectedUris.isNotEmpty()
-    }
-
-    private fun openPlaylist(id: Long) {
-        // The ViewModel list loads asynchronously; fall back to the store so a tap never no-ops.
-        val playlist = playlistViewModel.playlists.value.firstOrNull { it.id == id }
-            ?: runCatching { playlists.getPlaylists().firstOrNull { it.id == id } }.getOrNull()
-        if (playlist == null) {
-            refreshPlaylists()
-            return
-        }
-        if (currentTab != R.string.nav_playlists) playlistReturnTab = currentTab
-        selectedPlaylistId = id
-        playlistDetailBackCallback.isEnabled = true
-        showTab(R.string.nav_playlists)
-        renderPlaylistDetail(playlist)
-        (playlistRoot.parent?.parent as? ScrollView)?.scrollTo(0, 0)
-    }
-
-    private fun closePlaylistDetail() {
-        if (selectedPlaylistId == null) return
-        selectedPlaylistId = null
-        playlistDetailBackCallback.isEnabled = false
-        buildPlaylistListPage()
-        renderPlaylists(currentPlaylistScreen())
-        val returnTab = playlistReturnTab
-        playlistReturnTab = null
-        if (returnTab != null && currentTab == R.string.nav_playlists) showTab(returnTab)
-    }
-
-    /** Spotify-style playlist page: tinted header with cover, big play/shuffle, flat track list. */
-    private fun renderPlaylistDetail(playlist: SavedPlaylist) {
-        if (!::playlistRoot.isInitialized || selectedPlaylistId != playlist.id) return
-        val root = playlistRoot
-        root.removeAllViews()
-
-        val available = playlist.tracks.mapIndexedNotNull { index, raw ->
-            resolvePlaylistTrack(raw)?.let { Triple(index, raw, it) }
-        }
-        val resolvedTracks = available.map { it.third }
-        val localTracks = resolvedTracks.filter { it.uri.scheme != "http" && it.uri.scheme != "https" }
-
-        val tint = playlistTintColor(resolvedTracks)
-        root.background = android.graphics.drawable.LayerDrawable(
-            arrayOf(
-                android.graphics.drawable.ColorDrawable(COLOR_BACKGROUND),
-                GradientDrawable(
-                    GradientDrawable.Orientation.TOP_BOTTOM,
-                    intArrayOf(tint, COLOR_BACKGROUND),
-                ),
-            ),
-        ).apply {
-            setLayerGravity(1, Gravity.TOP or Gravity.FILL_HORIZONTAL)
-            setLayerHeight(1, dp(480))
-        }
-
-        // Top bar: round back button.
-        root.addView(
-            iconButton(
-                iconRes = R.drawable.ic_arrow_back,
-                description = getString(R.string.playlist_back),
-                fill = Color.argb(110, 0, 0, 0),
-                tint = COLOR_TEXT,
-                sizeDp = 40,
-                insetDp = 9,
-            ) { closePlaylistDetail() },
-            LinearLayout.LayoutParams(dp(40), dp(40)),
-        )
-
-        // Cover art, centred.
-        val coverSize = minOf(dp(240), (windowWidthPx() * 0.6f).toInt())
-        root.addView(
-            playlistCoverView(resolvedTracks, coverSize),
-            LinearLayout.LayoutParams(coverSize, coverSize).apply {
-                gravity = Gravity.CENTER_HORIZONTAL
-                topMargin = dp(4)
-                bottomMargin = dp(18)
-            },
-        )
-
-        root.addView(TextView(this).apply {
-            text = getString(R.string.playlist_label)
-            textSize = 12f
-            setTextColor(COLOR_MUTED)
-        }, matchWidth())
-        root.addView(TextView(this).apply {
-            text = playlist.name
-            textSize = 28f
-            maxLines = 2
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(COLOR_TEXT)
-            setPadding(0, dp(2), 0, dp(4))
-        }, matchWidth())
-        val totalMs = resolvedTracks.sumOf { it.durationMs.coerceAtLeast(0L) }
-        root.addView(TextView(this).apply {
-            text = if (totalMs > 0L) {
-                getString(R.string.playlist_summary, playlist.tracks.size, formatPlaylistDuration(totalMs))
-            } else {
-                getString(R.string.playlist_track_count, playlist.tracks.size)
-            }
-            textSize = 13f
-            setTextColor(COLOR_MUTED)
-        }, matchWidth())
-
-        // Action row: add, more | shuffle, play.
-        val actions = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        actions.addView(
-            iconButton(
-                iconRes = R.drawable.ic_add,
-                description = getString(R.string.add_tracks),
-                fill = Color.TRANSPARENT,
-                tint = COLOR_MUTED,
-                sizeDp = 40,
-                insetDp = 10,
-            ) { chooseTracksForPlaylist(playlist.id) },
-            LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(12) },
-        )
-        actions.addView(
-            iconButton(
-                iconRes = R.drawable.ic_more_vert,
-                description = getString(R.string.playlist_actions_accessibility, playlist.name),
-                tint = COLOR_MUTED,
-                sizeDp = 40,
-                insetDp = 10,
-            ) {},
-            LinearLayout.LayoutParams(dp(40), dp(40)),
-        )
-        // PopupMenu needs the view as its anchor, so wire it after creation.
-        actions.getChildAt(1).setOnClickListener { showPlaylistMenu(playlist, it) }
-        actions.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
-        actions.addView(
-            iconButton(
-                iconRes = R.drawable.ic_shuffle,
-                description = getString(R.string.playlist_shuffle_play),
-                tint = COLOR_TEXT,
-                sizeDp = 48,
-                insetDp = 12,
-            ) {
-                if (localTracks.isEmpty()) loadPlaylistAndPlay(playlist.id)
-                else {
-                    playTrackList(localTracks, localTracks.indices.random())
-                    playbackService?.setShuffle(true)
-                }
-            },
-            LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(10) },
-        )
-        actions.addView(
-            iconButton(
-                iconRes = R.drawable.ic_play,
-                description = getString(R.string.playlist_play_accessibility, playlist.name),
-                fill = COLOR_ACCENT,
-                tint = COLOR_BACKGROUND,
-                sizeDp = 58,
-                insetDp = 17,
-            ) {
-                playbackService?.setShuffle(false)
-                loadPlaylistAndPlay(playlist.id)
-            },
-            LinearLayout.LayoutParams(dp(58), dp(58)),
-        )
-        root.addView(actions, matchWidth().apply {
-            topMargin = dp(10)
-            bottomMargin = dp(12)
-        })
-
-        if (available.isEmpty()) {
-            root.addView(emptyMessage(getString(R.string.playlist_no_available_tracks)), matchWidth())
-            root.addView(Button(this).apply {
-                text = getString(R.string.add_tracks)
-                styleActionButton(this, true)
-                setOnClickListener { chooseTracksForPlaylist(playlist.id) }
-            }, LinearLayout.LayoutParams(WRAP, dp(48)).apply {
-                gravity = Gravity.CENTER_HORIZONTAL
-                topMargin = dp(8)
-            })
-            return
-        }
-
-        available.forEach { (originalIndex, raw, track) ->
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, dp(6), 0, dp(6))
-                isClickable = true
-                isFocusable = true
-                background = android.util.TypedValue().let { value ->
-                    theme.resolveAttribute(android.R.attr.selectableItemBackground, value, true)
-                    getDrawable(value.resourceId)
-                }
-                setOnLongClickListener {
-                    showTrackDetails(track)
-                    true
-                }
-                setOnClickListener {
-                    if (track.uri.scheme == "http" || track.uri.scheme == "https") {
-                        enqueueUrls(listOf(raw), showStatus = false)
-                    } else {
-                        val localIndex = localTracks.indexOf(track)
-                        if (localIndex >= 0) playTrackList(localTracks, localIndex)
-                    }
-                }
-            }
-            row.addView(artworkView(track, dp(52)), LinearLayout.LayoutParams(dp(52), dp(52)).apply {
-                marginEnd = dp(12)
-            })
-            val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            labels.addView(TextView(this).apply {
-                text = track.title
-                textSize = 15f
-                maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                setTextColor(COLOR_TEXT)
-            })
-            labels.addView(TextView(this).apply {
-                text = if (track.durationMs > 0L) "${track.artist} · ${formatTime(track.durationMs)}" else track.artist
-                textSize = 12f
-                maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                setTextColor(COLOR_MUTED)
-                setPadding(0, dp(2), 0, 0)
-            })
-            row.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f))
-            val more = iconButton(
-                iconRes = R.drawable.ic_more_vert,
-                description = getString(R.string.playlist_track_actions_accessibility, track.title),
-                tint = COLOR_MUTED,
-                sizeDp = 40,
-                insetDp = 10,
-            ) {}
-            more.setOnClickListener { anchor ->
-                android.widget.PopupMenu(this, anchor).apply {
-                    if (originalIndex > 0) menu.add(0, 0, 0, R.string.move_up)
-                    if (originalIndex < playlist.tracks.lastIndex) menu.add(0, 1, 1, R.string.move_down)
-                    menu.add(0, 2, 2, R.string.add_to_playlist)
-                    menu.add(0, 3, 3, R.string.track_details)
-                    menu.add(0, 4, 4, R.string.remove_from_this_playlist)
-                    setOnMenuItemClickListener { item ->
-                        when (item.itemId) {
-                            0 -> movePlaylistTrack(playlist.id, originalIndex, originalIndex - 1)
-                            1 -> movePlaylistTrack(playlist.id, originalIndex, originalIndex + 1)
-                            2 -> choosePlaylistForTrack(track)
-                            3 -> showTrackDetails(track)
-                            4 -> removeFromPlaylist(playlist.id, raw)
-                        }
-                        true
-                    }
-                    show()
-                }
-            }
-            row.addView(more, LinearLayout.LayoutParams(dp(44), dp(44)))
-            root.addView(row, matchWidth())
         }
     }
 
@@ -4425,75 +3940,6 @@ class MainActivity :
 
     /** Average colour of the first cover, darkened so white text stays readable. */
 
-    private fun formatPlaylistDuration(totalMs: Long): String {
-        val totalMinutes = (totalMs / 60_000L).coerceAtLeast(1L)
-        val hours = totalMinutes / 60
-        val minutes = totalMinutes % 60
-        return if (hours > 0) getString(R.string.duration_hours_minutes, hours.toInt(), minutes.toInt())
-        else getString(R.string.duration_minutes, minutes.toInt())
-    }
-
-    private fun movePlaylistTrack(playlistId: Long, fromIndex: Int, toIndex: Int) {
-        try {
-            val moved = playlists.moveTrack(playlistId, fromIndex, toIndex)
-            if (!moved) showError(getString(R.string.playlist_track_failed))
-            refreshPlaylists()
-        } catch (error: Exception) {
-            showError(error.localizedMessage ?: getString(R.string.playlist_track_failed))
-        }
-    }
-
-    /** Writes the playlist to an M3U file the user picks. */
-    private fun exportPlaylistM3u(playlist: SavedPlaylist) {
-        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "audio/x-mpegurl"
-            putExtra(Intent.EXTRA_TITLE, "${sanitizeFileName(playlist.name)}.m3u")
-        }
-        startActivityForResult(intent, REQUEST_EXPORT_M3U)
-        pendingExportPlaylistId = playlist.id
-    }
-
-    private fun sanitizeFileName(name: String): String =
-        name.trim().replace(Regex("[^\\p{L}\\p{N} _-]"), "_").ifBlank { "playlist" }
-
-    private fun sharePlaylistM3u(playlist: SavedPlaylist) {
-        val entries = playlist.tracks.mapNotNull { raw ->
-            val track = resolvePlaylistTrack(raw) ?: return@mapNotNull null
-            val label = listOf(track.artist, track.title)
-                .filter(String::isNotBlank)
-                .joinToString(" - ")
-            "#EXTINF:${(track.durationMs / 1000).coerceAtLeast(-1)},$label\n$raw"
-        }
-        if (entries.isEmpty()) {
-            showError(getString(R.string.playlist_no_available_tracks))
-            return
-        }
-        val m3u = (listOf("#EXTM3U") + entries).joinToString("\n")
-        try {
-            val share = Intent(Intent.ACTION_SEND).apply {
-                type = "audio/x-mpegurl"
-                putExtra(Intent.EXTRA_SUBJECT, "${playlist.name}.m3u")
-                putExtra(Intent.EXTRA_TEXT, m3u)
-            }
-            startActivity(Intent.createChooser(share, getString(R.string.share_playlist)))
-        } catch (error: Exception) {
-            showError(getString(R.string.playlist_error, error.localizedMessage ?: ""))
-        }
-    }
-
-    /**
-     * Imports an M3U file. Delegates to the repository so entries resolve by URI, file name,
-     * base name, or EXTINF title; the old inline parser only matched lines that were exactly
-     * a stored URI, so a normal playlist of file paths imported nothing.
-     */
-    private fun importPlaylistM3u(uri: Uri) {
-        lifecycleScope.launch {
-            playlistViewModel.importM3U(uri)
-            refreshPlaylists()
-        }
-    }
-
     private fun loadPlaylistAndPlay(id: Long) {
         val list = playlists.getPlaylists().firstOrNull { it.id == id } ?: return
         val resolved = list.tracks.mapNotNull(::resolvePlaylistTrack)
@@ -4503,48 +3949,6 @@ class MainActivity :
             val remoteUrls = resolved.map { it.uri.toString() }
             if (remoteUrls.isNotEmpty()) enqueueUrls(remoteUrls, showStatus = false)
             else Toast.makeText(this, getString(R.string.playlist_no_available_tracks), Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun confirmDeletePlaylist(id: Long, name: String) {
-        AlertDialog.Builder(this).setMessage(getString(R.string.delete_playlist_confirm, name))
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.delete) { _, _ ->
-                try {
-                    playlists.deletePlaylist(id); refreshPlaylists()
-                } catch (error: Exception) {
-                    showError(error.localizedMessage ?: getString(R.string.playlist_error, ""))
-                }
-            }.show()
-    }
-
-    private fun removeFromPlaylist(id: Long, uri: String) {
-        val playlist = runCatching { playlists.getPlaylists().firstOrNull { it.id == id } }.getOrNull()
-        val originalIndex = playlist?.tracks?.indexOf(uri) ?: -1
-        try {
-            val removed = playlists.removeTrack(id, uri)
-            if (!removed) {
-                showError(getString(R.string.playlist_track_failed))
-                return
-            }
-            refreshPlaylists()
-            // Reversible: the store keeps an explicit position, so undo restores it in place.
-            showSnackbar(getString(R.string.removed_from_playlist), getString(R.string.undo)) {
-                lifecycleScope.launch(Dispatchers.IO) {
-                    try {
-                        playlists.addTracks(id, listOf(uri))
-                        if (originalIndex >= 0) {
-                            val last = playlists.getPlaylists().first { it.id == id }.tracks.lastIndex
-                            playlists.moveTrack(id, last, originalIndex)
-                        }
-                    } catch (error: Exception) {
-                        android.util.Log.e("MainActivity", "Undo failed", error)
-                    }
-                    runOnUiThread { if (!destroyed) refreshPlaylists() }
-                }
-            }
-        } catch (error: Exception) {
-            showError(error.localizedMessage ?: getString(R.string.playlist_track_failed))
         }
     }
 
@@ -4808,7 +4212,7 @@ class MainActivity :
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_IMPORT_AUDIO && resultCode == RESULT_OK) importResult(data)
         if (requestCode == REQUEST_IMPORT_M3U && resultCode == RESULT_OK) {
-            data?.data?.let(::importPlaylistM3u)
+            data?.data?.let { playlistsSection.importPlaylistM3u(it) }
         }
         if (requestCode == REQUEST_EXPORT_M3U && resultCode == RESULT_OK) {
             val target = data?.data
