@@ -772,6 +772,18 @@ internal class HomeScreen(
      * history, playlists, or tracks keeps the home empty state.
      */
     private fun renderMusicShelves() {
+        val build = runCatching { buildMusicShelves() }
+        build.onFailure { error ->
+            // The home screen must never crash the app; degrade to the empty state instead.
+            android.util.Log.e("HomeScreen", "Home shelves failed to render", error)
+            if (homeLibraryContent.childCount == 0) {
+                homeLibraryContent.addView(buildHomeEmptyState(), matchWidth())
+            }
+        }
+        build.getOrNull()?.forEach { (title, cards) -> addShelf(title, cards) }
+    }
+
+    private fun buildMusicShelves(): List<Pair<String, List<ShelfCardSpec>>> {
         val libraryTracks = host.libraryViewModel.tracks.value
         val recentPreview = host.recentHistory()
         val recentTracks = recentPreview.entries.map(host::recentHistoryTrack)
@@ -784,13 +796,17 @@ internal class HomeScreen(
             emptyList()
         }
         val playlistCards = savedPlaylists.map(::playlistShelfCard)
+        val albumComparator =
+            Comparator<Map.Entry<String, List<AudioTrack>>> { left, right ->
+                String.CASE_INSENSITIVE_ORDER.compare(left.key, right.key)
+            }
         val artistCards = groupLibraryTracks(true, libraryTracks)
             .entries
-            .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.key })
+            .sortedWith(albumComparator)
             .map { (name, tracks) -> groupShelfCard(name, tracks, HOME_CATEGORY_ARTISTS) }
         val albumCards = groupLibraryTracks(false, libraryTracks)
             .entries
-            .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.key })
+            .sortedWith(albumComparator)
             .map { (name, tracks) -> groupShelfCard(name, tracks, HOME_CATEGORY_ALBUMS) }
         val recentlyAdded = libraryTracks
             .sortedByDescending { it.dateAdded }
@@ -798,19 +814,28 @@ internal class HomeScreen(
         val recentlyAddedCards = recentlyAdded.mapIndexed { index, track ->
             trackShelfCard(track, recentlyAdded, index)
         }
-        addShelf(context.getString(R.string.recent_history_title), recentCards)
-        addShelf(context.getString(R.string.playlists_title), playlistCards)
-        addShelf(context.getString(R.string.home_category_artists), artistCards)
-        addShelf(context.getString(R.string.home_category_albums), albumCards)
-        addShelf(context.getString(R.string.home_recent_heading), recentlyAddedCards)
-        if (recentCards.isEmpty() &&
-            playlistCards.isEmpty() &&
-            artistCards.isEmpty() &&
-            albumCards.isEmpty() &&
-            recentlyAddedCards.isEmpty()
-        ) {
-            homeLibraryContent.addView(buildHomeEmptyState(), matchWidth())
+        return listOf(
+            context.getString(R.string.recent_history_title) to recentCards,
+            context.getString(R.string.playlists_title) to playlistCards,
+            context.getString(R.string.home_category_artists) to artistCards,
+            context.getString(R.string.home_category_albums) to albumCards,
+            context.getString(R.string.home_recent_heading) to recentlyAddedCards,
+        ).also { shelves ->
+            if (shelves.none { it.second.isNotEmpty() }) {
+                homeLibraryContent.addView(buildHomeEmptyState(), matchWidth())
+            }
         }
+    }
+
+
+    /** Placeholder used when a card has no artwork to show, so it is never a blank space. */
+    private fun placeholderShelfArtwork(): View = context.iconView(
+        R.drawable.ic_note,
+        56,
+        COLOR_MUTED,
+    ).apply {
+        background = roundedBackground(COLOR_SURFACE, context.dp(8))
+        clipToOutline = true
     }
 
     /** One card inside a home shelf: its artwork, both text lines, description, and click. */
@@ -831,7 +856,12 @@ internal class HomeScreen(
             matchWidth().apply { topMargin = context.dp(8) },
         )
         val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
-        cards.forEach { card -> row.addView(buildShelfCard(card)) }
+        cards.forEach { card ->
+            // A malformed card would otherwise crash the whole home screen, so drop it.
+            runCatching { row.addView(buildShelfCard(card)) }
+        }
+        if (row.childCount == 0) return
+
         shelf.addView(HorizontalScrollView(context).apply {
             isHorizontalScrollBarEnabled = false
             addView(row)
@@ -912,10 +942,11 @@ internal class HomeScreen(
         category: Int,
     ): ShelfCardSpec {
         val count = context.getString(R.string.home_artist_count, tracks.size)
+        val artwork = tracks.firstOrNull()?.let { track ->
+            context.artworkView(track, context.dp(148)).apply { clipToOutline = true }
+        } ?: placeholderShelfArtwork()
         return ShelfCardSpec(
-            artwork = context.artworkView(tracks.first(), context.dp(148)).apply {
-                clipToOutline = true
-            },
+            artwork = artwork,
             title = name,
             subtitle = count,
             description = context.getString(R.string.home_group_accessibility, name, count),
