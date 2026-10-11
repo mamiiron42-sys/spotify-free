@@ -318,7 +318,7 @@ class PlaylistRepository @Inject constructor(
     )
 
     /** One parsed M3U entry: its path/URI plus the metadata the preceding directives carried. */
-    private class M3uEntry(
+    internal class M3uEntry(
         val raw: String,
         val title: String?,
         val artist: String?,
@@ -327,7 +327,7 @@ class PlaylistRepository @Inject constructor(
     )
 
     /** Matched track URIs for an import, plus how many entries could not be resolved. */
-    private class M3uResolution(val uris: List<String>, val skipped: Int)
+    internal class M3uResolution(val uris: List<String>, val skipped: Int)
 
     /** Bytes read from the document, with a size flag so the caller can choose its message. */
     private class M3uReadResult(val bytes: ByteArray?, val tooLarge: Boolean)
@@ -368,56 +368,6 @@ class PlaylistRepository @Inject constructor(
     }
 
     /** Splits M3U text into entries, carrying `#EXTINF`/`#EXTGRP` state to the following path. */
-    private fun parseM3u(text: String): List<M3uEntry> {
-        val entries = mutableListOf<M3uEntry>()
-        var title: String? = null
-        var durationSeconds: Int? = null
-        var group: String? = null
-        text.lineSequence().forEach { rawLine ->
-            val line = rawLine.trim()
-            when {
-                line.isEmpty() -> Unit
-
-                line.startsWith(EXTINF_PREFIX, ignoreCase = true) -> {
-                    val details = line.substringAfter(':', "")
-                    durationSeconds = details.substringBefore(',').trim().toIntOrNull()
-                        ?.takeIf { it >= 0 }
-                    title = details.substringAfter(',', "").trim().takeIf(String::isNotEmpty)
-                }
-
-                line.startsWith(EXTGRP_PREFIX, ignoreCase = true) ->
-                    group = line.substringAfter(':', "").trim().takeIf(String::isNotEmpty)
-
-                line.startsWith("#") -> Unit
-
-                else -> {
-                    val display = title?.let { DASH_RUN_REGEX.replace(it, " - ") }
-                    val separator = display?.indexOf(TITLE_SEPARATOR) ?: -1
-                    val artist = display
-                        ?.takeIf { separator > 0 }
-                        ?.substring(0, separator)
-                        ?.trim()
-                        ?.takeIf(String::isNotEmpty)
-                    val entryTitle = if (display != null && separator > 0) {
-                        display.substring(separator + TITLE_SEPARATOR.length).trim()
-                    } else {
-                        display?.trim()
-                    }
-                    entries += M3uEntry(
-                        raw = line,
-                        title = entryTitle?.takeIf(String::isNotEmpty),
-                        artist = artist,
-                        album = group,
-                        durationSeconds = durationSeconds,
-                    )
-                    title = null
-                    durationSeconds = null
-                    group = null
-                }
-            }
-        }
-        return entries
-    }
 
     /**
      * Every local track an import can match against. The MediaStore audio
@@ -705,6 +655,56 @@ class PlaylistRepository @Inject constructor(
         }
 
     companion object {
+        internal fun parseM3u(text: String): List<M3uEntry> {
+            val entries = mutableListOf<M3uEntry>()
+            var title: String? = null
+            var durationSeconds: Int? = null
+            var group: String? = null
+            text.lineSequence().forEach { rawLine ->
+                val line = rawLine.trim()
+                when {
+                    line.isEmpty() -> Unit
+
+                    line.startsWith(EXTINF_PREFIX, ignoreCase = true) -> {
+                        val details = line.substringAfter(':', "")
+                        durationSeconds = details.substringBefore(',').trim().toIntOrNull()
+                            ?.takeIf { it >= 0 }
+                        title = details.substringAfter(',', "").trim().takeIf(String::isNotEmpty)
+                    }
+
+                    line.startsWith(EXTGRP_PREFIX, ignoreCase = true) ->
+                        group = line.substringAfter(':', "").trim().takeIf(String::isNotEmpty)
+
+                    line.startsWith("#") -> Unit
+
+                    else -> {
+                        val display = title?.let { DASH_RUN_REGEX.replace(it, " - ") }
+                        val separator = display?.indexOf(TITLE_SEPARATOR) ?: -1
+                        val artist = display
+                            ?.takeIf { separator > 0 }
+                            ?.substring(0, separator)
+                            ?.trim()
+                            ?.takeIf(String::isNotEmpty)
+                        val entryTitle = if (display != null && separator > 0) {
+                            display.substring(separator + TITLE_SEPARATOR.length).trim()
+                        } else {
+                            display?.trim()
+                        }
+                        entries += M3uEntry(
+                            raw = line,
+                            title = entryTitle?.takeIf(String::isNotEmpty),
+                            artist = artist,
+                            album = group,
+                            durationSeconds = durationSeconds,
+                        )
+                        title = null
+                        durationSeconds = null
+                        group = null
+                    }
+                }
+            }
+            return entries
+        }
         /** Import is capped like MainActivity's importer so a huge file cannot exhaust memory. */
         private const val MAX_M3U_BYTES = 1024 * 1024
 
