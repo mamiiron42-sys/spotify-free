@@ -155,6 +155,9 @@
     <string name="import_audio">Import audio</string>
     <string name="play_all">Play all</string>
     <string name="import_permission_warning">%1$d selected item(s) were not audio files or did not allow persistent access.</string>
+    <string name="import_none_selected">No audio files selected.</string>
+    <string name="import_already_imported">Those tracks are already in your library.</string>
+    <string name="import_succeeded">Imported %1$d track(s).</string>
     <string name="unknown_track">Unknown track</string>
     <string name="unknown_artist">Unknown artist</string>
     <string name="unknown_album">Unknown album</string>
