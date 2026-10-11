@@ -17,7 +17,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.provider.MediaStore
-import android.text.format.DateUtils
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -117,15 +116,7 @@ class MainActivity :
     private lateinit var searchButton: Button
     private val jobAdapter = DownloadJobAdapter(this)
     private var pendingExportPlaylistId: Long? = null
-    private lateinit var homeCategories: LinearLayout
-    private lateinit var homeSubcategories: LinearLayout
-    private lateinit var homeLibraryContent: LinearLayout
-    private lateinit var homeMusicGrid: GridLayout
     private lateinit var downloadSettingsContent: LinearLayout
-    private lateinit var downloadSettingsToggle: TextView
-    private var homeCategory = HOME_CATEGORY_MUSIC
-    private var homeSubcategory = 0
-    private var selectedHomeGroup: String? = null
     private lateinit var formatSpinner: Spinner
     private lateinit var concurrencySpinner: Spinner
     private lateinit var wifiOnlyToggle: CheckBox
@@ -333,7 +324,7 @@ class MainActivity :
                 refreshLibrary()
                 requestMissingPermissions()
             } else {
-                renderHomeLibrary()
+                homeScreenSection.render()
             }
         }
     }
@@ -381,9 +372,10 @@ class MainActivity :
         }
         content = FrameLayout(this)
         screen.addView(content, LinearLayout.LayoutParams(MATCH, 0, 1f))
-        val homeScreen = newScrollScreen()
-        buildHomeScreen(homeScreen)
-        content.addView(homeScreen, FrameLayout.LayoutParams(MATCH, MATCH))
+        val homeScroll = newScrollScreen()
+        homeScreenSection.attachTo(homeScroll)
+        buildDownloadSettingsCard(homeScroll)
+        content.addView(homeScroll, FrameLayout.LayoutParams(MATCH, MATCH))
         val searchScreen = newScrollScreen()
         buildSearchScreen(searchScreen)
         content.addView(searchScreen, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -485,7 +477,7 @@ class MainActivity :
             setPadding(dp(4), dp(4), dp(4), dp(6))
         }
         listOf(
-            R.string.nav_home to homeScreen,
+            R.string.nav_home to homeScroll,
             R.string.nav_search to searchScreen,
             R.string.nav_library to libraryScroll,
         ).forEach { (label, view) ->
@@ -726,191 +718,6 @@ class MainActivity :
         searchViewModel.loadNextPage()
     }
 
-    private fun showHomeCollection() {
-        homeLibraryContent.visibility = View.VISIBLE
-        animateHomeContent()
-    }
-
-    private fun updateHomeCategoryStyles() {
-        for (index in 0 until homeCategories.childCount) {
-            val chip = homeCategories.getChildAt(index) as TextView
-            val selected = chip.tag == homeCategory
-            chip.isSelected = selected
-            stylePillChip(chip, selected)
-        }
-        for (index in 0 until homeSubcategories.childCount) {
-            val chip = homeSubcategories.getChildAt(index) as TextView
-            val selected = chip.tag == homeSubcategory
-            chip.isSelected = selected
-            stylePillChip(chip, selected)
-        }
-    }
-
-    private fun homeCategoryColor(category: Int): Int = when (category) {
-        HOME_CATEGORY_ARTISTS -> COLOR_ACCENT_SECONDARY
-        HOME_CATEGORY_ALBUMS -> COLOR_ACCENT_WARM
-        HOME_CATEGORY_PLAYLISTS -> COLOR_ACCENT_BLUE
-        HOME_CATEGORY_DISCOVER -> COLOR_ACCENT_PINK
-        else -> COLOR_ACCENT
-    }
-
-    private fun homeSubcategoryLabels(category: Int): List<Int> = when (category) {
-        HOME_CATEGORY_RECENT_PLAYED -> emptyList()
-        HOME_CATEGORY_MUSIC -> listOf(
-            R.string.home_music_all,
-            R.string.home_music_recent,
-            R.string.home_music_longest,
-        )
-
-        HOME_CATEGORY_ARTISTS -> listOf(
-            R.string.home_artists_az,
-            R.string.home_artists_top,
-            R.string.home_artists_recent,
-        )
-
-        HOME_CATEGORY_ALBUMS -> listOf(
-            R.string.home_albums_az,
-            R.string.home_albums_top,
-            R.string.home_albums_recent,
-        )
-
-        HOME_CATEGORY_PLAYLISTS -> listOf(
-            R.string.home_playlists_mine,
-            R.string.home_playlists_create,
-            R.string.home_playlists_import,
-        )
-
-        else -> listOf(
-            R.string.mood_pop,
-            R.string.mood_chill,
-            R.string.mood_focus,
-        )
-    }
-
-    private fun renderHomeSubcategories() {
-        if (!::homeSubcategories.isInitialized) return
-        homeSubcategories.removeAllViews()
-        homeSubcategoryLabels(homeCategory).forEachIndexed { index, label ->
-            homeSubcategories.addView(TextView(this).apply {
-                text = getString(label)
-                gravity = Gravity.CENTER
-                setPadding(dp(14), dp(9), dp(14), dp(9))
-                textSize = 14f
-                minHeight = dp(48)
-                isClickable = true
-                isFocusable = true
-                tag = index
-                contentDescription = getString(R.string.home_category_accessibility, getString(label))
-                setOnClickListener {
-                    homeSubcategory = index
-                    animateSuccess(this)
-                    updateHomeCategoryStyles()
-                    if (homeCategory == HOME_CATEGORY_DISCOVER) {
-                        showTab(R.string.nav_search)
-                        searchSection.search(getString(label))
-                        searchMusic(getString(label))
-                    } else {
-                        showHomeCollection()
-                        renderHomeLibrary()
-                    }
-                }
-            }, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginEnd = dp(8) })
-        }
-    }
-
-    private fun homeGridCardWidth(columns: Int): Int {
-        val containerWidth = minOf(
-            dp(MAX_CONTENT_WIDTH_DP),
-            (windowWidthPx() - dp(24)).coerceAtLeast(0),
-        )
-        return (containerWidth - dp(36) - dp(8) * (columns - 1))
-            .coerceAtLeast(dp(columns * 68)) / columns
-    }
-
-    private fun addHomeTrackCard(
-        track: AudioTrack,
-        queue: List<AudioTrack>,
-        index: Int,
-        targetGrid: GridLayout = homeMusicGrid,
-        playedAt: Long? = null,
-        historyEntryId: Long? = null,
-    ) {
-        val columns = searchGridColumnCount()
-        val cellIndex = targetGrid.childCount
-        val cardWidth = homeGridCardWidth(columns)
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = roundedBackground(COLOR_CARD, dp(14))
-            setPadding(dp(7), dp(7), dp(7), dp(8))
-            isClickable = true
-            isFocusable = true
-            contentDescription = getString(R.string.home_track_accessibility, track.title, track.artist)
-            setOnClickListener {
-                animateSuccess(this)
-                playTrackList(queue, index)
-            }
-            setOnLongClickListener {
-                showTrackDetails(track)
-                true
-            }
-        }
-        card.addView(
-            artworkView(track, cardWidth - dp(14)),
-            LinearLayout.LayoutParams(MATCH, cardWidth - dp(14)),
-        )
-        card.addView(TextView(this).apply {
-            text = track.title
-            textSize = 13f
-            maxLines = 2
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(COLOR_TEXT)
-            setPadding(dp(2), dp(8), dp(2), 0)
-        }, LinearLayout.LayoutParams(MATCH, dp(45)))
-        if (playedAt != null) {
-            card.addView(TextView(this).apply {
-                text = getString(
-                    R.string.recent_played_at,
-                    DateUtils.getRelativeTimeSpanString(playedAt),
-                )
-                textSize = 10f
-                maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                setTextColor(COLOR_MUTED)
-                setPadding(dp(2), dp(2), dp(2), 0)
-            }, LinearLayout.LayoutParams(MATCH, WRAP))
-        }
-        val artistLine = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        artistLine.addView(TextView(this).apply {
-            text = track.artist
-            textSize = 11f
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setTextColor(COLOR_MUTED)
-        }, LinearLayout.LayoutParams(0, WRAP, 1f))
-        val overflowButton = iconButton(
-            iconRes = R.drawable.ic_more_vert,
-            description = getString(R.string.track_actions_accessibility, track.title),
-            tint = COLOR_MUTED,
-            sizeDp = 48,
-        ) { showTrackMenu(track, card, historyEntryId) }
-        artistLine.addView(overflowButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(3) })
-        card.addView(artistLine, matchWidth())
-        val params = GridLayout.LayoutParams(
-            GridLayout.spec(cellIndex / columns),
-            GridLayout.spec(cellIndex % columns),
-        ).apply {
-            width = cardWidth
-            height = WRAP
-            setMargins(dp(4), dp(4), dp(4), dp(8))
-        }
-        targetGrid.addView(card, params)
-        animateHomeCard(card, cellIndex)
-    }
-
     private fun showTrackMenu(track: AudioTrack, anchor: View, historyEntryId: Long? = null) {
         val likedName = getString(R.string.liked_songs)
         lifecycleScope.launch {
@@ -1036,450 +843,6 @@ class MainActivity :
         }
     }
 
-    private fun addHomeGroupCard(
-        name: String,
-        tracks: List<AudioTrack>,
-        cellIndex: Int,
-    ) {
-        val columns = searchGridColumnCount()
-        val cardWidth = homeGridCardWidth(columns)
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = roundedBackground(COLOR_CARD, dp(14))
-            setPadding(dp(7), dp(7), dp(7), dp(8))
-            isClickable = true
-            isFocusable = true
-            contentDescription = getString(
-                R.string.home_group_accessibility,
-                name,
-                getString(R.string.home_artist_count, tracks.size),
-            )
-            setOnClickListener {
-                animateSuccess(this)
-                selectedHomeGroup = name
-                renderHomeLibrary()
-            }
-        }
-        card.addView(
-            artworkView(tracks.first(), cardWidth - dp(14)),
-            LinearLayout.LayoutParams(MATCH, cardWidth - dp(14)),
-        )
-        card.addView(TextView(this).apply {
-            text = name
-            textSize = 13f
-            maxLines = 2
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(COLOR_TEXT)
-            setPadding(dp(2), dp(8), dp(2), dp(2))
-        }, LinearLayout.LayoutParams(MATCH, dp(46)))
-        card.addView(TextView(this).apply {
-            text = getString(R.string.home_artist_count, tracks.size)
-            textSize = 11f
-            setTextColor(COLOR_MUTED)
-            setPadding(dp(2), 0, dp(2), dp(3))
-        }, LinearLayout.LayoutParams(MATCH, WRAP))
-        val params = GridLayout.LayoutParams(
-            GridLayout.spec(cellIndex / columns),
-            GridLayout.spec(cellIndex % columns),
-        ).apply {
-            width = cardWidth
-            height = WRAP
-            setMargins(dp(4), dp(4), dp(4), dp(8))
-        }
-        homeMusicGrid.addView(card, params)
-        animateHomeCard(card, cellIndex)
-    }
-
-    private fun renderHomeRecentHistory() {
-        val heading = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(sectionTitle(getString(R.string.recent_history_title)), LinearLayout.LayoutParams(0, WRAP, 1f))
-            if (recentHistoryEntries.isNotEmpty()) addView(Button(this@MainActivity).apply {
-                text = getString(R.string.clear_play_history)
-                styleActionButton(this, false)
-                setOnClickListener { confirmClearPlaybackHistory() }
-            }, LinearLayout.LayoutParams(WRAP, dp(44)))
-        }
-        homeLibraryContent.addView(heading, matchWidth())
-        if (recentHistoryEntries.isEmpty()) {
-            val message = when {
-                recentHistoryLoadFailed -> getString(R.string.recent_history_load_error)
-                recentHistoryLoading -> getString(R.string.recent_history_loading)
-                else -> getString(R.string.recent_history_empty)
-            }
-            homeLibraryContent.addView(emptyMessage(message), matchWidth())
-            if (recentHistoryLoadFailed) {
-                homeLibraryContent.addView(Button(this).apply {
-                    text = getString(R.string.action_retry)
-                    styleActionButton(this, false)
-                    setOnClickListener { loadMorePlaybackHistory() }
-                }, matchWidth())
-            }
-            return
-        }
-        val tracks = recentHistoryEntries.map(::toAudioTrack)
-        homeMusicGrid = newHomeMusicGrid()
-        recentHistoryEntries.forEachIndexed { index, entry ->
-            addHomeTrackCard(
-                track = tracks[index],
-                queue = tracks,
-                index = index,
-                playedAt = entry.playedAt,
-                historyEntryId = entry.id,
-            )
-        }
-        homeLibraryContent.addView(homeMusicGrid, matchWidth())
-        if (recentHistoryLoadFailed) {
-            homeLibraryContent.addView(emptyMessage(getString(R.string.recent_history_load_error)), matchWidth())
-            homeLibraryContent.addView(Button(this).apply {
-                text = getString(R.string.action_retry)
-                styleActionButton(this, false)
-                setOnClickListener { loadMorePlaybackHistory() }
-            }, matchWidth())
-        } else if (recentHistoryHasMore || recentHistoryLoading) {
-            homeLibraryContent.addView(Button(this).apply {
-                text = getString(if (recentHistoryLoading) R.string.recent_history_loading else R.string.load_older)
-                styleActionButton(this, false)
-                isEnabled = !recentHistoryLoading
-                setOnClickListener { loadMorePlaybackHistory() }
-            }, matchWidth().apply { topMargin = dp(8) })
-        }
-    }
-
-    private fun addHomePlaylistCard(playlist: SavedPlaylist, cellIndex: Int) {
-        val columns = searchGridColumnCount()
-        val cardWidth = homeGridCardWidth(columns)
-        val coverTrack = playlist.tracks.firstNotNullOfOrNull { uri ->
-            resolvePlaylistTrack(uri)
-        }
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = roundedBackground(COLOR_CARD, dp(14))
-            setPadding(dp(7), dp(7), dp(7), dp(8))
-            isClickable = true
-            isFocusable = true
-            contentDescription = getString(
-                R.string.home_playlist_accessibility,
-                playlist.name,
-                getString(R.string.home_artist_count, playlist.tracks.size),
-            )
-            setOnClickListener {
-                animateSuccess(this)
-                playlistsSection.openPlaylist(playlist.id)
-            }
-        }
-        card.addView(
-            coverTrack?.let { artworkView(it, cardWidth - dp(14)) } ?: ImageView(this).apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP
-                setImageResource(android.R.drawable.ic_media_play)
-                background = roundedBackground(COLOR_SURFACE, dp(9))
-                contentDescription = getString(R.string.track_artwork)
-            },
-            LinearLayout.LayoutParams(MATCH, cardWidth - dp(14)),
-        )
-        card.addView(TextView(this).apply {
-            text = playlist.name
-            textSize = 13f
-            maxLines = 2
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(COLOR_TEXT)
-            setPadding(dp(2), dp(8), dp(2), dp(2))
-        }, LinearLayout.LayoutParams(MATCH, dp(46)))
-        val actions = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        actions.addView(TextView(this).apply {
-            text = getString(R.string.home_artist_count, playlist.tracks.size)
-            textSize = 11f
-            setTextColor(COLOR_MUTED)
-        }, LinearLayout.LayoutParams(0, WRAP, 1f))
-        actions.addView(iconButton(
-            iconRes = R.drawable.ic_play,
-            description = getString(R.string.play_track_named, playlist.name),
-            fill = COLOR_ACCENT,
-            tint = Color.BLACK,
-            sizeDp = 48,
-            insetDp = 13,
-        ) { loadPlaylistAndPlay(playlist.id) }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(3) })
-        card.addView(actions)
-        val params = GridLayout.LayoutParams(
-            GridLayout.spec(cellIndex / columns),
-            GridLayout.spec(cellIndex % columns),
-        ).apply {
-            width = cardWidth
-            height = WRAP
-            setMargins(dp(4), dp(4), dp(4), dp(8))
-        }
-        homeMusicGrid.addView(card, params)
-        animateHomeCard(card, cellIndex)
-    }
-
-    private fun renderHomeLibrary() {
-        if (!::homeLibraryContent.isInitialized) return
-        updateHomeCategoryStyles()
-        homeLibraryContent.removeAllViews()
-        animateHomeContent()
-        if (homeCategory == HOME_CATEGORY_DISCOVER) {
-            homeLibraryContent.addView(
-                sectionTitle(getString(R.string.home_discover_prompt)),
-                matchWidth(),
-            )
-            homeLibraryContent.addView(TextView(this).apply {
-                text = getString(R.string.home_discover_hint)
-                textSize = 14f
-                setTextColor(COLOR_MUTED)
-                setPadding(0, dp(6), 0, dp(12))
-            }, matchWidth())
-            homeSubcategoryLabels(HOME_CATEGORY_DISCOVER).forEachIndexed { index, label ->
-                homeLibraryContent.addView(Button(this).apply {
-                    text = getString(R.string.home_discover_search, getString(label))
-                    styleActionButton(this, index == homeSubcategory)
-                    setOnClickListener {
-                        homeSubcategory = index
-                        updateHomeCategoryStyles()
-                        showTab(R.string.nav_search)
-                        searchSection.search(getString(label))
-                        searchMusic(getString(label))
-                    }
-                }, matchWidth().apply { bottomMargin = dp(8) })
-            }
-            return
-        }
-        if (homeCategory == HOME_CATEGORY_RECENT_PLAYED) {
-            renderHomeRecentHistory()
-            return
-        }
-        if (homeCategory == HOME_CATEGORY_PLAYLISTS) {
-            if (homeSubcategory == 1) {
-                homeLibraryContent.addView(Button(this).apply {
-                    text = getString(R.string.home_playlists_create_action)
-                    styleActionButton(this, true)
-                    setOnClickListener { playlistsSection.promptCreatePlaylist() }
-                }, matchWidth().apply { bottomMargin = dp(8) })
-            } else if (homeSubcategory == 2) {
-                homeLibraryContent.addView(Button(this).apply {
-                    text = getString(R.string.import_playlist_m3u)
-                    styleActionButton(this, true)
-                    setOnClickListener { playlistsSection.launchPlaylistImport() }
-                }, matchWidth().apply { bottomMargin = dp(8) })
-            }
-            val saved = try {
-                playlists.getPlaylists()
-            } catch (error: Exception) {
-                homeLibraryContent.addView(
-                    emptyMessage(getString(R.string.playlist_error, error.localizedMessage ?: "")),
-                )
-                return
-            }
-            if (saved.isEmpty()) {
-                homeLibraryContent.addView(
-                    emptyMessage(
-                        getString(
-                            if (homeSubcategory == 1) R.string.home_playlists_create_empty
-                            else if (homeSubcategory == 2) R.string.home_playlists_import_empty
-                            else R.string.home_playlists_empty,
-                        )
-                    )
-                )
-                return
-            }
-            homeLibraryContent.addView(
-                sectionTitle(getString(R.string.home_category_playlists)),
-                matchWidth(),
-            )
-            homeMusicGrid = newHomeMusicGrid()
-            saved.forEachIndexed { index, playlist -> addHomePlaylistCard(playlist, index) }
-            homeLibraryContent.addView(homeMusicGrid, matchWidth())
-            return
-        }
-        val libraryTracks = libraryViewModel.tracks.value
-        if (libraryTracks.isEmpty()) {
-            homeLibraryContent.addView(buildHomeEmptyState(), matchWidth())
-            return
-        }
-        if (homeCategory == HOME_CATEGORY_ARTISTS || homeCategory == HOME_CATEGORY_ALBUMS) {
-            val categoryName = getString(
-                if (homeCategory == HOME_CATEGORY_ARTISTS) R.string.home_category_artists
-                else R.string.home_category_albums,
-            )
-            val grouped = libraryTracks.groupBy {
-                if (homeCategory == HOME_CATEGORY_ARTISTS) {
-                    it.artist.ifBlank { getString(R.string.unknown_artist) }
-                } else {
-                    it.album.ifBlank { getString(R.string.unknown_album) }
-                }
-            }
-            val sortedGroups = when (homeSubcategory) {
-                1 -> grouped.entries.sortedWith(
-                    compareByDescending<Map.Entry<String, List<AudioTrack>>> { it.value.size }
-                        .thenBy(String.CASE_INSENSITIVE_ORDER) { it.key },
-                )
-
-                2 -> grouped.entries.sortedByDescending { entry ->
-                    entry.value.maxOfOrNull { it.dateAdded } ?: 0L
-                }
-
-                else -> grouped.entries.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.key })
-            }
-            val selectedGroup = selectedHomeGroup
-            if (selectedGroup != null) {
-                homeLibraryContent.addView(Button(this).apply {
-                    text = getString(R.string.home_group_back, categoryName.lowercase())
-                    styleActionButton(this, false)
-                    setOnClickListener {
-                        selectedHomeGroup = null
-                        renderHomeLibrary()
-                    }
-                }, matchWidth())
-                homeLibraryContent.addView(sectionTitle(selectedGroup), sectionSpacing())
-                homeMusicGrid = newHomeMusicGrid()
-                val members = grouped[selectedGroup].orEmpty()
-                members.forEachIndexed { index, track -> addHomeTrackCard(track, members, index) }
-                homeLibraryContent.addView(homeMusicGrid, matchWidth())
-                return
-            }
-            homeLibraryContent.addView(sectionTitle(categoryName), matchWidth())
-            homeMusicGrid = newHomeMusicGrid()
-            sortedGroups.forEachIndexed { index, (name, tracks) ->
-                addHomeGroupCard(name, tracks, index)
-            }
-            homeLibraryContent.addView(homeMusicGrid, matchWidth())
-            return
-        }
-
-        val ordered = when (homeSubcategory) {
-            1 -> libraryTracks.sortedByDescending { it.dateAdded }
-            2 -> libraryTracks.sortedByDescending { it.durationMs }
-            else -> libraryTracks
-        }
-        val tracks = if (homeSubcategory == 1) ordered.take(40) else ordered
-        val heading = getString(
-            when {
-                homeSubcategory == 1 -> R.string.home_recent_heading
-                homeSubcategory == 2 -> R.string.home_music_longest
-                else -> R.string.home_collection_heading
-            },
-        )
-        if (homeSubcategory == 0 && tracks.size >= 2) {
-            homeLibraryContent.addView(renderSpotifyQuickAccess(tracks), matchWidth().apply {
-                bottomMargin = dp(14)
-            })
-        }
-        homeLibraryContent.addView(
-            homeSectionHeading(
-                "$heading · ${getString(R.string.home_artist_count, tracks.size)}",
-                getString(R.string.play),
-                onAction = { if (tracks.isNotEmpty()) playTrackList(tracks, 0) },
-            ),
-            sectionSpacing(),
-        )
-        homeMusicGrid = newHomeMusicGrid()
-        tracks.forEachIndexed { index, track -> addHomeTrackCard(track, tracks, index) }
-        homeLibraryContent.addView(homeMusicGrid, matchWidth())
-    }
-
-    private fun renderSpotifyQuickAccess(tracks: List<AudioTrack>): View {
-        val grid = GridLayout(this).apply {
-            columnCount = 2
-            alignmentMode = GridLayout.ALIGN_BOUNDS
-            useDefaultMargins = false
-        }
-        val topItems = tracks.take(6)
-        val containerWidth = minOf(dp(MAX_CONTENT_WIDTH_DP), (windowWidthPx() - dp(24)).coerceAtLeast(0))
-        val cardWidth = (containerWidth - dp(8)) / 2
-        topItems.forEachIndexed { index, track ->
-            val card = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                background = roundedBackground(COLOR_SURFACE, dp(6))
-                isClickable = true
-                isFocusable = true
-                contentDescription = getString(R.string.home_track_accessibility, track.title, track.artist)
-                setOnClickListener {
-                    animateSuccess(this)
-                    playTrackList(tracks, index)
-                }
-            }
-            card.addView(
-                artworkView(track, dp(56)).apply {
-                    (background as? GradientDrawable)?.cornerRadius = dp(6).toFloat()
-                },
-                LinearLayout.LayoutParams(dp(56), dp(56)),
-            )
-            val titleView = TextView(this).apply {
-                text = track.title
-                textSize = 12f
-                setTypeface(null, android.graphics.Typeface.BOLD)
-                setTextColor(COLOR_TEXT)
-                maxLines = 2
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                setPadding(dp(8), 0, dp(8), 0)
-            }
-            card.addView(titleView, LinearLayout.LayoutParams(0, WRAP, 1f))
-            val params = GridLayout.LayoutParams(
-                GridLayout.spec(index / 2),
-                GridLayout.spec(index % 2),
-            ).apply {
-                width = cardWidth
-                height = dp(56)
-                setMargins(dp(2), dp(3), dp(2), dp(3))
-            }
-            grid.addView(card, params)
-        }
-        return grid
-    }
-
-    private fun buildHomeEmptyState(): View = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        background = roundedBackground(COLOR_CARD, dp(22))
-        setPadding(dp(18), dp(18), dp(18), dp(18))
-
-        val artAndCopy = LinearLayout(this@MainActivity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        artAndCopy.addView(iconView(R.drawable.ic_note, 36, COLOR_BACKGROUND).apply {
-            background = roundedBackground(COLOR_ACCENT_SECONDARY, dp(20))
-            contentDescription = getString(R.string.music_collection_art)
-        }, LinearLayout.LayoutParams(dp(72), dp(72)).apply { marginEnd = dp(16) })
-        val message = LinearLayout(this@MainActivity).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(TextView(this@MainActivity).apply {
-                text = getString(R.string.home_empty_title)
-                textSize = 19f
-                setTypeface(null, android.graphics.Typeface.BOLD)
-                setTextColor(COLOR_TEXT)
-            })
-            addView(TextView(this@MainActivity).apply {
-                text = getString(R.string.home_import_prompt)
-                textSize = 14f
-                setTextColor(COLOR_MUTED)
-                setPadding(0, dp(5), 0, 0)
-            })
-        }
-        artAndCopy.addView(message, LinearLayout.LayoutParams(0, WRAP, 1f))
-        addView(artAndCopy, matchWidth())
-
-        addView(Button(this@MainActivity).apply {
-            text = getString(R.string.import_audio)
-            styleActionButton(this, true)
-            setOnClickListener {
-                animateSuccess(this)
-                launchAudioImport()
-            }
-        }, matchWidth().apply { topMargin = dp(16) })
-    }
-
-    private fun newHomeMusicGrid() = GridLayout(this).apply {
-        columnCount = searchGridColumnCount()
-        alignmentMode = GridLayout.ALIGN_BOUNDS
-        useDefaultMargins = false
-    }
-
     private fun animateHomeCard(card: View, index: Int) {
         if (!animationsEnabled()) return
         card.alpha = 0f
@@ -1493,116 +856,13 @@ class MainActivity :
             .start()
     }
 
-    private fun homeSectionHeading(
-        title: String,
-        actionText: String,
-        onAction: () -> Unit,
-    ): View = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        addView(sectionTitle(title), LinearLayout.LayoutParams(0, WRAP, 1f))
-        addView(Button(this@MainActivity).apply {
-            text = actionText
-            minWidth = dp(48)
-            styleActionButton(this, false)
-            setOnClickListener { onAction() }
-        }, LinearLayout.LayoutParams(WRAP, dp(48)))
-    }
-
-    private fun buildHomeScreen(scroll: ScrollView) {
+    /**
+     * The download-settings card that closes the home tab, after its disclosure row. The
+     * spinners and the status line stay here because the settings they read are saved and
+     * driven by the activity, not by the screen that shows them.
+     */
+    private fun buildDownloadSettingsCard(scroll: ScrollView) {
         val root = scrollContent(scroll)
-        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
-        val greetingText = when (hour) {
-            in 5..11 -> getString(R.string.home_greeting_morning)
-            in 12..17 -> getString(R.string.home_greeting_afternoon)
-            else -> getString(R.string.home_greeting_evening)
-        }
-        root.addView(TextView(this).apply {
-            text = greetingText
-            textSize = 26f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(COLOR_TEXT)
-            setPadding(0, 0, 0, dp(10))
-        })
-        root.addView(buildDiscoveryHero(), matchWidth().apply { bottomMargin = dp(12) })
-        buildNowPlayingSection(root)
-        val categoryItems = listOf(
-            HOME_CATEGORY_MUSIC to R.string.home_category_all,
-            HOME_CATEGORY_RECENT_PLAYED to R.string.home_category_recent_played,
-            HOME_CATEGORY_ARTISTS to R.string.home_category_artists,
-            HOME_CATEGORY_ALBUMS to R.string.home_category_albums,
-            HOME_CATEGORY_PLAYLISTS to R.string.home_category_playlists,
-            HOME_CATEGORY_DISCOVER to R.string.home_category_discover,
-        )
-        homeCategories = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        categoryItems.forEach { (category, title) ->
-            homeCategories.addView(TextView(this).apply {
-                text = getString(title)
-                textSize = 14f
-                gravity = Gravity.CENTER
-                setPadding(dp(14), dp(9), dp(14), dp(9))
-                isClickable = true
-                isFocusable = true
-                minHeight = dp(48)
-                contentDescription = getString(R.string.home_category_accessibility, getString(title))
-                if (category == HOME_CATEGORY_DISCOVER) {
-                    setTextColor(COLOR_ACCENT_WARM)
-                }
-                setOnClickListener {
-                    homeCategory = category
-                    homeSubcategory = 0
-                    selectedHomeGroup = null
-                    animateSuccess(this)
-                    renderHomeSubcategories()
-                    showHomeCollection()
-                    renderHomeLibrary()
-                }
-                tag = category
-            }, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginEnd = dp(8) })
-        }
-        val categoryScroll = android.widget.HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(homeCategories)
-        }
-        root.addView(categoryScroll, matchWidth().apply { topMargin = dp(14) })
-
-        homeSubcategories = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val subcategoryScroll = android.widget.HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-            addView(homeSubcategories)
-        }
-        root.addView(subcategoryScroll, matchWidth().apply { topMargin = dp(8) })
-        renderHomeSubcategories()
-
-        homeLibraryContent = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(homeLibraryContent, matchWidth().apply { topMargin = dp(8) })
-
-        downloadSettingsToggle = TextView(this).apply {
-            text = getString(R.string.download_settings_summary)
-            textSize = 14f
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(COLOR_TEXT)
-            gravity = Gravity.CENTER_VERTICAL
-            minHeight = dp(52)
-            setPadding(dp(16), dp(4), dp(16), dp(4))
-            background = roundedBackground(COLOR_SURFACE, dp(16))
-            isClickable = true
-            isFocusable = true
-            contentDescription = getString(R.string.download_settings_accessibility)
-            setOnClickListener {
-                val expanded = downloadSettingsContent.visibility != View.VISIBLE
-                downloadSettingsContent.visibility = if (expanded) View.VISIBLE else View.GONE
-                text = getString(
-                    if (expanded) R.string.download_settings_expanded else R.string.download_settings_summary,
-                )
-                contentDescription = getString(
-                    if (expanded) R.string.download_settings_collapse
-                    else R.string.download_settings_accessibility,
-                )
-                animateSuccess(this)
-            }
-        }
-        root.addView(downloadSettingsToggle, sectionSpacing())
         formatSpinner = Spinner(this).apply {
             background = roundedBackground(COLOR_SURFACE, dp(12))
             adapter =
@@ -1628,75 +888,10 @@ class MainActivity :
             visibility = View.GONE
         }
         root.addView(downloadSettingsContent, matchWidth().apply { topMargin = dp(6) })
-        renderHomeLibrary()
     }
 
     private fun buildSearchScreen(scroll: ScrollView) {
         searchSection.attachTo(scroll)
-    }
-
-    private fun buildDiscoveryHero(): View = FrameLayout(this).apply {
-        val compact = resources.configuration.screenWidthDp < 380
-        val artworkSize = dp(if (compact) 78 else 112)
-        val heroGradient = GradientDrawable(
-            GradientDrawable.Orientation.TL_BR,
-            intArrayOf(COLOR_HERO_START, COLOR_HERO_MIDDLE, COLOR_HERO_END),
-        ).apply { cornerRadius = dp(24).toFloat() }
-        background = heroGradient
-        setPadding(dp(if (compact) 16 else 20), dp(18), dp(14), dp(18))
-        minimumHeight = dp(if (compact) 138 else 150)
-        elevation = dp(2).toFloat()
-
-        val copy = LinearLayout(this@MainActivity).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        copy.addView(TextView(this@MainActivity).apply {
-            text = getString(R.string.home_hero_title)
-            textSize = if (compact) 20f else 22f
-            maxLines = 2
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(COLOR_HERO_TEXT)
-            setPadding(0, dp(4), 0, dp(2))
-        })
-        copy.addView(TextView(this@MainActivity).apply {
-            text = getString(R.string.home_hero_subtitle)
-            textSize = if (compact) 12f else 13f
-            maxLines = 2
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setTextColor(COLOR_HERO_TEXT.withAlpha(220))
-        })
-        copy.addView(Button(this@MainActivity).apply {
-            text = getString(R.string.home_hero_action)
-            textSize = 13f
-            isAllCaps = false
-            setTextColor(COLOR_BACKGROUND)
-            background = roundedBackground(Color.WHITE, dp(14))
-            minHeight = dp(44)
-            minWidth = dp(if (compact) 128 else 142)
-            setPadding(dp(12), 0, dp(12), 0)
-            contentDescription = getString(R.string.home_hero_action_accessibility)
-            setOnClickListener {
-                homeCategory = HOME_CATEGORY_DISCOVER
-                homeSubcategory = 0
-                selectedHomeGroup = null
-                renderHomeSubcategories()
-                updateHomeCategoryStyles()
-                showHomeCollection()
-                renderHomeLibrary()
-                animateSuccess(this)
-            }
-        }, LinearLayout.LayoutParams(WRAP, dp(46)).apply {
-            topMargin = dp(if (compact) 8 else 12)
-        })
-
-        addView(copy, FrameLayout.LayoutParams(MATCH, WRAP, Gravity.START or Gravity.CENTER_VERTICAL).apply {
-            rightMargin = artworkSize + dp(12)
-        })
-        addView(iconView(R.drawable.ic_note, if (compact) 62 else 88, Color.WHITE).apply {
-            background = roundedBackground(Color.argb(45, 255, 255, 255), artworkSize)
-            contentDescription = getString(R.string.home_hero_art_description)
-        }, FrameLayout.LayoutParams(artworkSize, artworkSize, Gravity.END or Gravity.CENTER_VERTICAL))
     }
 
     /**
@@ -2016,9 +1211,9 @@ class MainActivity :
             libraryScreen.refreshPlaylistConsumers()
         }
 
-        override fun homeShowingPlaylists() = homeCategory == HOME_CATEGORY_PLAYLISTS
+        override fun homeShowingPlaylists() = homeScreenSection.isShowingPlaylists()
 
-        override fun renderHomeLibrary() = this@MainActivity.renderHomeLibrary()
+        override fun renderHomeLibrary() = homeScreenSection.render()
 
         override fun setPlaylistDetailBackEnabled(enabled: Boolean) {
             playlistDetailBackCallback.isEnabled = enabled
@@ -2049,6 +1244,84 @@ class MainActivity :
     }
 
     private val playlistsSection: PlaylistsScreen by lazy { PlaylistsScreen(this, playlistsHost) }
+
+    // ── Home screen ─────────────────────────────────────────────────────────
+
+    /**
+     * The home tab is owned by [HomeScreen]; this host is everything it needs. The activity
+     * keeps the ViewModels, the playlist store, the track-grid metrics, the download-settings
+     * card, and the recent-played paging it shares with the library tab, so the screen never
+     * reaches back into it.
+     */
+    private val homeHost = object : HomeScreen.Host {
+        override val libraryViewModel: LibraryViewModel
+            get() = this@MainActivity.libraryViewModel
+
+        override val playlists: PlaylistStore
+            get() = this@MainActivity.playlists
+
+        override fun resolvePlaylistTrack(raw: String): AudioTrack? =
+            this@MainActivity.resolvePlaylistTrack(raw)
+
+        override fun playTrackList(tracks: List<AudioTrack>, index: Int) =
+            this@MainActivity.playTrackList(tracks, index)
+
+        override fun loadPlaylistAndPlay(id: Long) = this@MainActivity.loadPlaylistAndPlay(id)
+
+        override fun openPlaylist(id: Long) = playlistsSection.openPlaylist(id)
+
+        override fun showTrackMenu(track: AudioTrack, anchor: View, historyEntryId: Long?) =
+            this@MainActivity.showTrackMenu(track, anchor, historyEntryId)
+
+        override fun showTrackDetails(track: AudioTrack) = this@MainActivity.showTrackDetails(track)
+
+        override fun showTab(label: Int) = this@MainActivity.showTab(label)
+
+        override fun search(query: String) {
+            searchSection.search(query)
+            searchMusic(query)
+        }
+
+        override fun promptCreatePlaylist() = playlistsSection.promptCreatePlaylist()
+
+        override fun launchPlaylistImport() = playlistsSection.launchPlaylistImport()
+
+        override fun launchAudioImport() = this@MainActivity.launchAudioImport()
+
+        override fun isDownloadSettingsExpanded(): Boolean =
+            ::downloadSettingsContent.isInitialized && downloadSettingsContent.visibility == View.VISIBLE
+
+        override fun setDownloadSettingsExpanded(expanded: Boolean) {
+            if (!::downloadSettingsContent.isInitialized) return
+            downloadSettingsContent.visibility = if (expanded) View.VISIBLE else View.GONE
+        }
+
+        override fun recentHistory(): RecentHistoryPreview = RecentHistoryPreview(
+            entries = recentHistoryEntries,
+            loading = recentHistoryLoading,
+            loadFailed = recentHistoryLoadFailed,
+            pageSize = RECENT_HISTORY_PAGE_SIZE,
+            previewCount = RECENT_HISTORY_PREVIEW_COUNT,
+        )
+
+        override fun recentHistoryTrack(entry: PlaybackHistoryEntry): AudioTrack =
+            toAudioTrack(entry)
+
+        override fun recentHistoryHasMore(): Boolean = recentHistoryHasMore
+
+        override fun clearPlaybackHistory() = confirmClearPlaybackHistory()
+
+        override fun loadMorePlaybackHistory() = this@MainActivity.loadMorePlaybackHistory()
+
+        override fun gridColumnCount(): Int = searchGridColumnCount()
+
+        override fun animateCard(card: View, index: Int) = animateHomeCard(card, index)
+
+        /** The activity owns the capture section, so it also owns where it is attached. */
+        override fun attachNowPlayingSection(root: LinearLayout) = buildNowPlayingSection(root)
+    }
+
+    private val homeScreenSection: HomeScreen by lazy { HomeScreen(this, homeHost) }
 
     // ── Library screen ─────────────────────────────────────────────────────
 
@@ -2100,13 +1373,13 @@ class MainActivity :
         /** The activity owns the capture section, so it also owns where it is attached. */
         override fun attachNowPlayingSection(root: LinearLayout) = buildNowPlayingSection(root)
 
-        override fun newTrackGrid(): GridLayout = newHomeMusicGrid()
+        override fun newTrackGrid(): GridLayout = homeScreenSection.newTrackGrid()
 
         override fun gridColumnCount(): Int = searchGridColumnCount()
 
         override fun gridCellWidthPx(): Int = searchCellWidthPx()
 
-        override fun gridCardWidth(columns: Int): Int = homeGridCardWidth(columns)
+        override fun gridCardWidth(columns: Int): Int = homeScreenSection.gridCardWidth(columns)
 
         override fun animateTrackCard(card: View, index: Int) = animateHomeCard(card, index)
 
@@ -2117,7 +1390,7 @@ class MainActivity :
             targetGrid: GridLayout,
             playedAt: Long?,
             historyEntryId: Long?,
-        ) = addHomeTrackCard(track, queue, index, targetGrid, playedAt, historyEntryId)
+        ) = homeScreenSection.addTrackCard(track, queue, index, targetGrid, playedAt, historyEntryId)
 
         override fun recentHistory(): RecentHistoryPreview = RecentHistoryPreview(
             entries = recentHistoryEntries,
@@ -2765,9 +2038,7 @@ class MainActivity :
 
     private fun refreshPlaybackHistoryViews() {
         libraryScreen.renderRecentHistory()
-        if (::homeLibraryContent.isInitialized && homeCategory == HOME_CATEGORY_RECENT_PLAYED) {
-            renderHomeLibrary()
-        }
+        homeScreenSection.renderRecentHistory()
     }
 
     private fun toAudioTrack(entry: PlaybackHistoryEntry): AudioTrack =
@@ -2782,12 +2053,7 @@ class MainActivity :
         )
 
     private fun showRecentHistoryCollection() {
-        homeCategory = HOME_CATEGORY_RECENT_PLAYED
-        homeSubcategory = 0
-        selectedHomeGroup = null
-        renderHomeSubcategories()
-        showHomeCollection()
-        renderHomeLibrary()
+        homeScreenSection.showRecentHistoryCollection()
         showTab(R.string.nav_home)
     }
 
@@ -2942,7 +2208,7 @@ class MainActivity :
                 if (destroyed) return@runOnUiThread
                 libraryViewModel.updateLibrary(unique, errors.distinct())
                 searchViewModel.setLibraryVideoIds(videoIds)
-                renderHomeLibrary()
+                homeScreenSection.render()
                 refreshPlaybackHistoryViews()
                 refreshPlaylists()
             }
@@ -3696,19 +2962,6 @@ class MainActivity :
 
     private fun animateSuccess(view: View) = view.animateStateChange()
 
-    private fun animateHomeContent() {
-        if (!animationsEnabled() || !::homeLibraryContent.isInitialized) return
-        homeLibraryContent.animate().cancel()
-        homeLibraryContent.alpha = 0f
-        homeLibraryContent.translationY = dp(7).toFloat()
-        homeLibraryContent.animate()
-            .alpha(1f)
-            .translationY(0f)
-            .setDuration(TAB_TRANSITION_MS)
-            .setInterpolator(android.view.animation.DecelerateInterpolator(1.3f))
-            .start()
-    }
-
     private fun sectionSpacing() = matchWidth().apply { topMargin = dp(20) }
     private fun matchWidth() = LinearLayout.LayoutParams(MATCH, WRAP)
 
@@ -3727,19 +2980,11 @@ class MainActivity :
         private const val KEY_IMPORTED = "imported_audio_uris"
         private const val MAX_TRACK_ART_PIXELS = 640
         private const val MAX_CONCURRENT_DOWNLOADS = 10
-        private const val MAX_CONTENT_WIDTH_DP = 760
         /** How many captured tracks to keep loaded for the "From YouTube" section. */
         private const val NOW_PLAYING_HISTORY_LIMIT = 40
 
-        private const val TAB_TRANSITION_MS = 180L
         private const val RECENT_HISTORY_PAGE_SIZE = 32
         private const val RECENT_HISTORY_PREVIEW_COUNT = 4
-        private const val HOME_CATEGORY_MUSIC = 0
-        private const val HOME_CATEGORY_ARTISTS = 1
-        private const val HOME_CATEGORY_ALBUMS = 2
-        private const val HOME_CATEGORY_PLAYLISTS = 3
-        private const val HOME_CATEGORY_DISCOVER = 4
-        private const val HOME_CATEGORY_RECENT_PLAYED = 5
         private const val DEFAULT_EQUALIZER_LEVEL = 50
         private const val DEFAULT_SPEED_INDEX = 2
         private val PLAYBACK_SPEEDS = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
