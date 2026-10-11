@@ -105,7 +105,6 @@
     <string name="download_details_unavailable">No additional details were reported for this job.</string>
     <string name="library_search_hint">Filter by title, artist, or album</string>
     <string name="library_filter_all">All tracks</string>
-    <string name="library_filter_button">View: %1$s</string>
     <string name="library_sort_button">Sort: %1$s</string>
     <string name="library_group_artist">Artists</string>
     <string name="library_group_album">Albums</string>
@@ -250,8 +249,10 @@
     <string name="search_music">Search</string>
     <string name="search_no_results">No matches found. Try a different query.</string>
     <string name="search_prompt">Search for a track or artist to get started.</string>
+    <string name="load_more">Load more</string>
     <string name="search_query_required">Enter a search query or URL.</string>
     <string name="search_results">Search results</string>
+    <string name="search_results_count">Search results · %1$d</string>
     <string name="search_service_unavailable">Download service is not ready yet.</string>
     <string name="searching">Searching…</string>
     <string name="state_canceled">Canceled</string>
@@ -284,7 +285,11 @@
     <string name="library_filter_tracks">Songs</string>
     <string name="library_liked_songs_subtitle">Pinned · %1$d songs</string>
     <string name="liked_songs_empty">No liked songs yet</string>
-    <string name="library_sort_menu">Change library sort order</string>
+    <string name="library_sort_menu">Change library sort and grouping</string>
+    <string name="library_sort_menu_button">Sort: %1$s, group: %2$s</string>
+    <string name="library_sort_submenu">Sort by</string>
+    <string name="library_group_submenu">Group by</string>
+    <string name="library_group_all">All tracks</string>
     <string name="playlist_row_accessibility">Playlist %1$s, %2$d songs</string>
     <string name="playlist_menu_accessibility">Options for playlist %1$s</string>
 </resources>

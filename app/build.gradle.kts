@@ -17,7 +17,9 @@ android {
         versionName = "1.0"
 
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            // armeabi-v7a keeps 32-bit phones working; ffmpeg-kit-full 6.0-2.LTS and
+            // Chaquopy's Python 3.11 runtime both ship it.
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86_64")
         }
     }
 
@@ -32,8 +34,11 @@ android {
 }
 
 dependencies {
-    implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:8.1.9")
-    
+    // 6.0-2.LTS is the last release line shipping all four ABIs, including armeabi-v7a
+    // for 32-bit devices (the maintained fork only publishes arm64-v8a and x86_64).
+    // Same com.arthenica.ffmpegkit Java package, so the conversion code is unchanged.
+    implementation("com.arthenica:ffmpeg-kit-full:6.0-2.LTS")
+
     // Timber logging
     implementation("com.jakewharton.timber:timber:5.0.1")
     
