@@ -15,13 +15,10 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.Environment
 import android.os.IBinder
 import android.provider.MediaStore
-import android.content.ContentValues
 import android.text.format.DateUtils
 import android.view.Gravity
-import android.view.Menu
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -50,7 +47,6 @@ import androidx.lifecycle.LifecycleCoroutineScope
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.DefaultItemAnimator
-import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import dagger.hilt.android.AndroidEntryPoint
@@ -98,17 +94,6 @@ private data class QueueScreen(
 )
 
 /**
- * Everything the library tab needs to render, derived from `LibraryViewModel` in one pass.
- */
-private data class LibraryScreen(
-    val rows: List<LibraryRow>,
-    val trackCount: Int,
-    val showPlayAll: Boolean,
-    val groupMode: Int,
-    val sortMode: Int,
-)
-
-/**
  * Everything the playlists tab needs to render, derived from `PlaylistViewModel` in one pass.
  */
 internal data class PlaylistScreen(
@@ -121,8 +106,7 @@ class MainActivity :
     ComponentActivity(),
     DownloadService.Listener,
     SearchResultAdapter.Callbacks,
-    DownloadJobAdapter.Callbacks,
-    LibraryAdapter.Callbacks {
+    DownloadJobAdapter.Callbacks {
     private val searchViewModel: SearchViewModel by viewModels()
     private val downloadViewModel: DownloadViewModel by viewModels()
     private val libraryViewModel: LibraryViewModel by viewModels()
@@ -132,7 +116,6 @@ class MainActivity :
     private lateinit var content: FrameLayout
     private lateinit var searchButton: Button
     private val jobAdapter = DownloadJobAdapter(this)
-    private val libraryAdapter = LibraryAdapter(this)
     private var pendingExportPlaylistId: Long? = null
     private lateinit var homeCategories: LinearLayout
     private lateinit var homeSubcategories: LinearLayout
@@ -151,22 +134,9 @@ class MainActivity :
     private lateinit var progressBar: ProgressBar
     private lateinit var queueList: RecyclerView
     private lateinit var queueEmpty: TextView
-    private lateinit var libraryList: RecyclerView
-    private lateinit var downloadHistoryList: GridLayout
     private lateinit var playerScreenRoot: LinearLayout
     private var snackbarView: LinearLayout? = null
     private var snackbarHideHandle: Runnable? = null
-    private lateinit var libraryRecentHistory: GridLayout
-    private lateinit var librarySortButton: ImageView
-    private lateinit var libraryTrackHeading: TextView
-    private lateinit var libraryPlayAllButton: Button
-    private lateinit var librarySearch: EditText
-    /** Container whose single child is rebuilt when the library section chip changes. */
-    private lateinit var libraryContent: LinearLayout
-    private var libraryLikedSongsCard: View? = null
-    private var libraryLikedSongsSubtitle: TextView? = null
-    private var librarySection = LIBRARY_SECTION_SONGS
-    private lateinit var librarySectionChips: List<TextView>
     /**
      * Back from the full-screen player returns to the tab the user came from. Without this,
      * Back exits the app from a surface the user navigated into.
@@ -267,17 +237,6 @@ class MainActivity :
             searchViewModel.setDownloadService(null)
             downloadViewModel.setDownloadService(null)
         }
-    }
-
-    private fun addHistoryEmptyMessage(message: String) {
-        downloadHistoryList.addView(
-            emptyMessage(message),
-            GridLayout.LayoutParams().apply {
-                width = MATCH
-                height = WRAP
-                columnSpec = GridLayout.spec(0, downloadHistoryList.columnCount)
-            },
-        )
     }
 
     private val playbackConnection = object : ServiceConnection {
@@ -431,9 +390,9 @@ class MainActivity :
         val queueScreen = newScrollScreen()
         buildQueueScreen(queueScreen)
         content.addView(queueScreen, FrameLayout.LayoutParams(MATCH, MATCH))
-        val libraryScreen = newScrollScreen()
-        buildLibraryScreen(libraryScreen)
-        content.addView(libraryScreen, FrameLayout.LayoutParams(MATCH, MATCH))
+        val libraryScroll = newScrollScreen()
+        libraryScreen.attachTo(libraryScroll)
+        content.addView(libraryScroll, FrameLayout.LayoutParams(MATCH, MATCH))
         val playlistsScreen = newScrollScreen()
         playlistsSection.attachTo(playlistsScreen)
         content.addView(playlistsScreen, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -528,7 +487,7 @@ class MainActivity :
         listOf(
             R.string.nav_home to homeScreen,
             R.string.nav_search to searchScreen,
-            R.string.nav_library to libraryScreen,
+            R.string.nav_library to libraryScroll,
         ).forEach { (label, view) ->
             val item = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -1879,307 +1838,6 @@ class MainActivity :
         renderQueue(currentQueueScreen())
     }
 
-    private fun buildLibraryScreen(scroll: ScrollView) {
-        val root = scrollContent(scroll)
-        val headerRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        headerRow.addView(
-            sectionTitle(getString(R.string.library_title)),
-            LinearLayout.LayoutParams(0, WRAP, 1f),
-        )
-        librarySortButton = iconButton(
-            iconRes = R.drawable.ic_chevron_down,
-            description = getString(R.string.library_sort_menu),
-            tint = COLOR_TEXT,
-            sizeDp = 40,
-            insetDp = 9,
-        ) { showLibrarySortMenu(librarySortButton) }
-        headerRow.addView(librarySortButton, LinearLayout.LayoutParams(dp(40), dp(40)))
-        root.addView(headerRow, matchWidth())
-
-        root.addView(buildLibraryLikedSongsCard(), matchWidth().apply {
-            topMargin = dp(4)
-            bottomMargin = dp(8)
-        })
-        buildNowPlayingSection(root)
-
-        val libraryActions = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        libraryActions.addView(Button(this).apply {
-            text = getString(R.string.nav_playlists)
-            styleActionButton(this, false)
-            setOnClickListener { showTab(R.string.nav_playlists) }
-        }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(6) })
-        libraryActions.addView(Button(this).apply {
-            text = getString(R.string.import_audio)
-            styleActionButton(this, true)
-            setOnClickListener { launchAudioImport() }
-        }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(6) })
-        root.addView(libraryActions, matchWidth().apply { topMargin = dp(8) })
-
-        librarySearch = EditText(this).apply {
-            hint = getString(R.string.library_search_hint)
-            isSingleLine = true
-            setTextColor(COLOR_TEXT)
-            setHintTextColor(COLOR_MUTED)
-            setPadding(dp(14), 0, dp(14), 0)
-            background = roundedBackground(COLOR_SURFACE, dp(14))
-            minHeight = dp(48)
-            addTextChangedListener(object : android.text.TextWatcher {
-                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                libraryViewModel.setFilterQuery(s?.toString().orEmpty())
-                if (librarySection == LIBRARY_SECTION_PLAYLISTS) rebuildLibraryContent()
-            }
-
-                override fun afterTextChanged(s: android.text.Editable?) {}
-            })
-        }
-        root.addView(librarySearch, matchWidth().apply { topMargin = dp(14) })
-
-        val chipsRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        librarySectionChips = listOf(
-            library_section_chip(R.string.library_filter_tracks, LIBRARY_SECTION_SONGS),
-            library_section_chip(R.string.library_filter_playlists, LIBRARY_SECTION_PLAYLISTS),
-        )
-        librarySectionChips.forEachIndexed { index, chip ->
-            chipsRow.addView(chip, LinearLayout.LayoutParams(WRAP, dp(36)).apply {
-                if (index > 0) marginStart = dp(8)
-            })
-        }
-        root.addView(chipsRow, matchWidth().apply { topMargin = dp(10) })
-
-        libraryContent = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        root.addView(libraryContent, matchWidth())
-        rebuildLibraryContent()
-    }
-
-    private fun library_section_chip(labelRes: Int, section: Int) = TextView(this).apply {
-        text = getString(labelRes)
-        contentDescription = getString(labelRes)
-        tag = section
-        setOnClickListener {
-            if (librarySection != section) {
-                librarySection = section
-                rebuildLibraryContent()
-                animateSuccess(this)
-            }
-        }
-    }
-
-    /** Rebuilds the section body and re-applies chip selection styling. */
-    private fun rebuildLibraryContent() {
-        libraryContent.removeAllViews()
-        if (librarySection == LIBRARY_SECTION_PLAYLISTS) {
-            buildLibraryPlaylistsContent(libraryContent)
-        } else {
-            buildLibrarySongsContent(libraryContent)
-        }
-        for (chip in librarySectionChips) {
-            stylePillChip(chip, chip.tag == librarySection)
-        }
-    }
-
-    /**
-     * Playlists rendered inline as Spotify-style rounded rows.
-     *
-     * Uses plain views rather than the playlists screen's adapter so both playlist
-     * surfaces can be alive at once without sharing a RecyclerView adapter.
-     */
-    private fun buildLibraryPlaylistsContent(root: LinearLayout) {
-        val query = librarySearch.text.toString().trim()
-        val saved = playlistViewModel.playlists.value
-            .filter { it.name.contains(query, ignoreCase = true) }
-        if (saved.isEmpty()) {
-            root.addView(
-                emptyMessage(
-                    if (query.isEmpty()) getString(R.string.playlists_empty)
-                    else getString(R.string.playlists_no_matches),
-                ),
-                matchWidth().apply { topMargin = dp(24) },
-            )
-            return
-        }
-        saved.forEach { playlist ->
-            val tracks = playlist.tracks
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                background = roundedBackground(COLOR_SURFACE, dp(6))
-                isClickable = true
-                isFocusable = true
-                contentDescription = getString(
-                    R.string.playlist_row_accessibility,
-                    playlist.name,
-                    tracks.size,
-                )
-                setOnClickListener {
-                    animateSuccess(this)
-                    playlistsSection.openPlaylist(playlist.id)
-                }
-            }
-            val isLikedSongs = playlist.name.equals(
-                getString(R.string.liked_songs),
-                ignoreCase = true,
-            )
-            val cover = FrameLayout(this).apply {
-                clipToOutline = true
-                background = if (isLikedSongs) {
-                    likedSongsGradient()
-                } else {
-                    roundedBackground(COLOR_CARD, dp(4))
-                }
-            }
-            val size = dp(56)
-            if (isLikedSongs) {
-                cover.addView(
-                    iconView(R.drawable.ic_heart_filled, 22, Color.WHITE),
-                    FrameLayout.LayoutParams(MATCH, MATCH),
-                )
-            } else {
-                val resolved = tracks.firstNotNullOfOrNull { uri -> resolvePlaylistTrack(uri) }
-                val artwork = ImageView(this).apply {
-                    scaleType = ImageView.ScaleType.CENTER_CROP
-                    setImageResource(android.R.drawable.ic_media_play)
-                }
-                resolved?.artwork?.let { artwork.setImageBitmap(it) }
-                cover.addView(artwork, FrameLayout.LayoutParams(MATCH, MATCH))
-            }
-            row.addView(cover, LinearLayout.LayoutParams(size, size))
-            val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            labels.addView(
-                TextView(this).apply {
-                    text = playlist.name
-                    textSize = 14f
-                    setTypeface(null, android.graphics.Typeface.BOLD)
-                    setTextColor(COLOR_TEXT)
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                },
-                LinearLayout.LayoutParams(0, WRAP, 1f),
-            )
-            labels.addView(
-                TextView(this).apply {
-                    text = if (isLikedSongs) {
-                        getString(R.string.library_liked_songs_subtitle, tracks.size)
-                    } else {
-                        getString(R.string.playlist_row_accessibility, playlist.name, tracks.size)
-                    }
-                    textSize = 11f
-                    setTextColor(COLOR_MUTED)
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                },
-                LinearLayout.LayoutParams(0, WRAP, 1f),
-            )
-            row.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f).apply {
-                marginStart = dp(12)
-            })
-            val playlistOverflow = iconButton(
-                iconRes = R.drawable.ic_more_vert,
-                description = getString(R.string.playlist_menu_accessibility, playlist.name),
-                tint = COLOR_MUTED,
-                sizeDp = 40,
-                insetDp = 9,
-            ) { playlistsSection.showPlaylistMenu(playlist, row) }
-            row.addView(playlistOverflow, LinearLayout.LayoutParams(dp(40), dp(40)))
-            root.addView(row, matchWidth().apply {
-                topMargin = dp(8)
-                bottomMargin = dp(1)
-            })
-        }
-    }
-
-    /** Spotify pinned "Liked Songs" card shown at the top of the library. */
-    /**
-     * Pinned Liked Songs row. Deliberately the same shape as every other playlist row: a
-     * small purple tile, two lines of text, and a play affordance. It used to be a
-     * full-width gradient card, which dominated the library for no information gain.
-     */
-    private fun buildLibraryLikedSongsCard(): View {
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = roundedBackground(COLOR_SURFACE, dp(8))
-            isClickable = true
-            isFocusable = true
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            contentDescription = getString(R.string.liked_songs)
-            setOnClickListener {
-                animateSuccess(this)
-                showTab(R.string.nav_playlists)
-            }
-        }
-        val tile = FrameLayout(this).apply {
-            background = roundedBackground(COLOR_ACCENT_SECONDARY, dp(4))
-        }
-        tile.addView(
-            iconView(R.drawable.ic_heart_filled, 22, Color.WHITE),
-            FrameLayout.LayoutParams(MATCH, MATCH),
-        )
-        card.addView(tile, LinearLayout.LayoutParams(dp(44), dp(44)))
-        val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        labels.addView(
-            TextView(this).apply {
-                text = getString(R.string.liked_songs)
-                textSize = 15f
-                setTypeface(null, android.graphics.Typeface.BOLD)
-                setTextColor(COLOR_TEXT)
-            },
-            LinearLayout.LayoutParams(0, WRAP, 1f),
-        )
-        libraryLikedSongsSubtitle = TextView(this).apply {
-            textSize = 12f
-            setTextColor(COLOR_MUTED)
-        }
-        labels.addView(libraryLikedSongsSubtitle, LinearLayout.LayoutParams(0, WRAP, 1f))
-        card.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) })
-        val playButton = iconButton(
-            iconRes = R.drawable.ic_play,
-            description = getString(R.string.play),
-            fill = Color.WHITE,
-            tint = Color.BLACK,
-            sizeDp = 40,
-            insetDp = 11,
-        ) {
-            lifecycleScope.launch {
-                val liked = playlistViewModel.likedPlaylistNamed(getString(R.string.liked_songs))
-                val tracks = liked?.tracks?.mapNotNull { resolvePlaylistTrack(it) }.orEmpty()
-                if (tracks.isEmpty()) {
-                    Toast.makeText(
-                        this@MainActivity,
-                        getString(R.string.liked_songs_empty),
-                        Toast.LENGTH_SHORT,
-                    ).show()
-                } else {
-                    playTrackList(tracks, 0)
-                }
-            }
-        }
-        card.addView(playButton, LinearLayout.LayoutParams(dp(40), dp(40)))
-        libraryLikedSongsCard = card
-        updateLikedSongsCard()
-        return card
-    }
-
-    /** Keeps the pinned card's song count in step with the playlist store. */
-    private fun updateLikedSongsCard() {
-        val card = libraryLikedSongsCard ?: return
-        if (card.visibility != View.VISIBLE) return
-        val liked = playlistViewModel.playlists.value.firstOrNull {
-            it.name.equals(getString(R.string.liked_songs), ignoreCase = true)
-        }
-        libraryLikedSongsSubtitle?.text =
-            getString(R.string.library_liked_songs_subtitle, liked?.tracks?.size ?: 0)
-    }
-
     /**
      * The captured-listening section is owned by [NowPlayingSection]; this host is everything
      * it needs from the activity. It deliberately exposes suspend functions rather than the
@@ -2277,136 +1935,11 @@ class MainActivity :
         }
     }
 
-    /** Songs section: group/sort controls, track grid, recent history and downloads. */
-    private fun buildLibrarySongsContent(root: LinearLayout) {
-        val trackHeading = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        libraryTrackHeading = sectionTitle(getString(R.string.library_tracks))
-        trackHeading.addView(libraryTrackHeading, LinearLayout.LayoutParams(0, WRAP, 1f))
-        libraryPlayAllButton = Button(this).apply {
-            text = getString(R.string.play_all)
-            styleActionButton(this, false)
-            minHeight = dp(40)
-            visibility = View.GONE
-            setOnClickListener {
-                val matches = libraryViewModel.filteredTracks.value
-                if (matches.isNotEmpty()) playTrackList(matches, 0)
-            }
-        }
-        trackHeading.addView(libraryPlayAllButton, LinearLayout.LayoutParams(WRAP, dp(40)))
-        root.addView(trackHeading, sectionSpacing())
-
-        libraryList = RecyclerView(this).apply {
-            adapter = libraryAdapter
-            layoutManager = GridLayoutManager(this@MainActivity, searchGridColumnCount()).apply {
-                spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
-                    override fun getSpanSize(position: Int): Int =
-                        libraryAdapter.spanSizeFor(position, spanCount)
-                }
-            }
-            // Lives inside a ScrollView, which owns scrolling.
-            isNestedScrollingEnabled = false
-            itemAnimator = DefaultItemAnimator().apply { supportsChangeAnimations = false }
-            libraryAdapter.cellWidthPx = searchCellWidthPx()
-        }
-        root.addView(libraryList, matchWidth().apply { topMargin = dp(4) })
-        val recentHeading = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        recentHeading.addView(
-            sectionTitle(getString(R.string.recent_history_title)),
-            LinearLayout.LayoutParams(0, WRAP, 1f),
-        )
-        recentHeading.addView(Button(this).apply {
-            text = getString(R.string.see_all)
-            styleActionButton(this, false)
-            minHeight = dp(40)
-            setOnClickListener { showRecentHistoryCollection() }
-        }, LinearLayout.LayoutParams(WRAP, dp(40)))
-        root.addView(recentHeading, sectionSpacing())
-        libraryRecentHistory = newHomeMusicGrid()
-        root.addView(libraryRecentHistory, matchWidth())
-        root.addView(sectionTitle(getString(R.string.downloads)), sectionSpacing())
-        downloadHistoryList = newHomeMusicGrid()
-        root.addView(downloadHistoryList, matchWidth())
-    }
-
     /**
-     * The library controls are now one icon button, so the active sort lives in its
-     * content description rather than replacing the glyph.
-     */
-    private fun updateLibraryControlLabels(groupMode: Int, sortMode: Int) {
-        if (!::librarySortButton.isInitialized) return
-        val sortLabel = getString(
-            when (sortMode) {
-                LibraryViewModel.SORT_ARTIST -> R.string.library_sort_artist
-                LibraryViewModel.SORT_ALBUM -> R.string.library_sort_album
-                LibraryViewModel.SORT_DATE_ADDED -> R.string.library_sort_recent
-                else -> R.string.library_sort_title
-            },
-        )
-        val groupLabel = getString(
-            when (groupMode) {
-                LibraryViewModel.GROUP_ARTIST -> R.string.library_group_artist
-                LibraryViewModel.GROUP_ALBUM -> R.string.library_group_album
-                else -> R.string.library_group_all
-            },
-        )
-        librarySortButton.contentDescription =
-            getString(R.string.library_sort_menu_button, sortLabel, groupLabel)
-    }
-
-    /**
-     * Single menu driving both sort and grouping. The old layout also had a full-width
-     * "View: ..." pill that duplicated the sort control, which is what the library screens
-     * read as an oversized box.
-     */
-    private fun showLibrarySortMenu(anchor: View) {
-        val popup = android.widget.PopupMenu(this, anchor)
-        val sortSub = popup.menu.addSubMenu(
-            Menu.NONE,
-            LIBRARY_MENU_SORT,
-            Menu.NONE,
-            getString(R.string.library_sort_submenu),
-        )
-        listOf(
-            LibraryViewModel.SORT_TITLE to R.string.library_sort_title,
-            LibraryViewModel.SORT_ARTIST to R.string.library_sort_artist,
-            LibraryViewModel.SORT_ALBUM to R.string.library_sort_album,
-            LibraryViewModel.SORT_DATE_ADDED to R.string.library_sort_recent,
-        ).forEach { (mode, label) ->
-            sortSub.add(LIBRARY_MENU_SORT, mode, Menu.NONE, label)
-        }
-        val groupSub = popup.menu.addSubMenu(
-            Menu.NONE,
-            LIBRARY_MENU_GROUP,
-            Menu.NONE,
-            getString(R.string.library_group_submenu),
-        )
-        listOf(
-            LibraryViewModel.GROUP_NONE to R.string.library_group_all,
-            LibraryViewModel.GROUP_ARTIST to R.string.library_group_artist,
-            LibraryViewModel.GROUP_ALBUM to R.string.library_group_album,
-        ).forEach { (mode, label) ->
-            groupSub.add(LIBRARY_MENU_GROUP, mode, Menu.NONE, label)
-        }
-        popup.setOnMenuItemClickListener { item ->
-            when (item.groupId) {
-                LIBRARY_MENU_SORT -> libraryViewModel.setSortMode(item.itemId)
-                LIBRARY_MENU_GROUP -> libraryViewModel.setGroupMode(item.itemId)
-                else -> return@setOnMenuItemClickListener false
-            }
-            true
-        }
-        popup.show()
-    }
-
-    /**
-     * Requirement 5.3: the library grid is a pure function of `LibraryViewModel` state, so
-     * `DiffUtil` decides which cards actually changed when the filter or sort mode moves.
+     * Requirement 5.3 / 7.2: the grid is a pure function of `LibraryViewModel` state, so
+     * `DiffUtil` decides which rows actually changed and the screen never iterates the raw
+     * track list. The rows themselves live in [LibraryScreen]; this stays here because the
+     * collection has to follow the activity's lifecycle.
      */
     private fun observeLibrary() {
         lifecycleScope.launch {
@@ -2418,89 +1951,11 @@ class MainActivity :
                     libraryViewModel.groupMode,
                     libraryViewModel.sortMode,
                 ) { matches, allTracks, errors, groupMode, sortMode ->
-                    LibraryScreen(
-                        rows = libraryRows(matches, allTracks, errors, groupMode),
-                        trackCount = matches.size,
-                        showPlayAll = matches.isNotEmpty(),
-                        groupMode = groupMode,
-                        sortMode = sortMode,
-                    )
-                }.collect(::renderLibrary)
+                    libraryScreen.stateFor(matches, allTracks, errors, groupMode, sortMode)
+                }.collect(libraryScreen::render)
             }
         }
     }
-
-    private fun libraryRows(
-        matches: List<AudioTrack>,
-        allTracks: List<AudioTrack>,
-        errors: List<String>,
-        groupMode: Int,
-    ): List<LibraryRow> {
-        val rows = ArrayList<LibraryRow>()
-        if (errors.isNotEmpty()) rows += LibraryRow.Message(errors.joinToString("\n"))
-        val duplicateGroups = matches.groupBy { track ->
-            "${track.artist.normalizedForDuplicate()}\u0000${track.title.normalizedForDuplicate()}"
-        }.values.filter { group -> group.size > 1 }
-        if (duplicateGroups.isNotEmpty()) {
-            rows += LibraryRow.Message(getString(R.string.duplicate_tracks_notice, duplicateGroups.size))
-        }
-        if (matches.isEmpty()) {
-            rows += LibraryRow.Message(
-                getString(
-                    if (allTracks.isEmpty()) R.string.library_empty
-                    else R.string.library_no_filter_matches,
-                ),
-            )
-            return rows
-        }
-        when (groupMode) {
-            LibraryViewModel.GROUP_ARTIST, LibraryViewModel.GROUP_ALBUM -> {
-                matches.groupBy { libraryGroupName(it, groupMode) }
-                    .toSortedMap(String.CASE_INSENSITIVE_ORDER)
-                    .forEach { (name, members) ->
-                        rows += LibraryRow.Heading("$name  ·  ${members.size}")
-                        members.forEach { track -> rows += LibraryRow.Track(track, name) }
-                    }
-            }
-
-            else -> matches.forEach { track -> rows += LibraryRow.Track(track, null) }
-        }
-        return rows
-    }
-
-    /** The group heading [track] falls under for [groupMode]. */
-    private fun libraryGroupName(track: AudioTrack, groupMode: Int): String = when (groupMode) {
-        LibraryViewModel.GROUP_ARTIST -> track.artist.ifBlank { getString(R.string.unknown_artist) }
-        LibraryViewModel.GROUP_ALBUM -> track.album.ifBlank { getString(R.string.unknown_album) }
-        else -> ""
-    }
-
-    private fun renderLibrary(screen: LibraryScreen) {
-        libraryAdapter.cellWidthPx = searchCellWidthPx()
-        libraryAdapter.submitList(screen.rows)
-        libraryTrackHeading.text = getString(R.string.library_track_count, screen.trackCount)
-        libraryPlayAllButton.visibility = if (screen.showPlayAll) View.VISIBLE else View.GONE
-        updateLibraryControlLabels(screen.groupMode, screen.sortMode)
-    }
-
-    // ── LibraryAdapter.Callbacks ──────────────────────────────────────────────
-
-    override fun onLibraryTrackPlay(track: AudioTrack, groupKey: String?) {
-        val matches = libraryViewModel.filteredTracks.value
-        val playList = if (groupKey == null) {
-            matches
-        } else {
-            val groupMode = libraryViewModel.groupMode.value
-            matches.filter { libraryGroupName(it, groupMode) == groupKey }
-        }
-        val index = playList.indexOfFirst { it.uri.toString() == track.uri.toString() }
-        if (index >= 0) playTrackList(playList, index)
-    }
-
-    override fun onLibraryTrackDetails(track: AudioTrack) = showTrackDetails(track)
-
-    override fun onLibraryTrackMenu(track: AudioTrack, anchor: View) =
-        showTrackMenu(track, anchor)
 
     // ── Playlists screen ───────────────────────────────────────────────────
 
@@ -2558,10 +2013,7 @@ class MainActivity :
         }
 
         override fun refreshPlaylistConsumers() {
-            updateLikedSongsCard()
-            if (librarySection == LIBRARY_SECTION_PLAYLISTS && ::libraryContent.isInitialized) {
-                rebuildLibraryContent()
-            }
+            libraryScreen.refreshPlaylistConsumers()
         }
 
         override fun homeShowingPlaylists() = homeCategory == HOME_CATEGORY_PLAYLISTS
@@ -2596,7 +2048,94 @@ class MainActivity :
         }
     }
 
-    private val playlistsSection by lazy { PlaylistsScreen(this, playlistsHost) }
+    private val playlistsSection: PlaylistsScreen by lazy { PlaylistsScreen(this, playlistsHost) }
+
+    // ── Library screen ─────────────────────────────────────────────────────
+
+    /**
+     * The library tab is owned by [LibraryScreen]; this host is everything it needs. The
+     * activity keeps the ViewModels, the playlist store, the recent-played paging it
+     * shares with the home tab, the track-grid metrics shared with the home and search
+     * tabs, and the document pickers, so the section never reaches back into it.
+     */
+    private val libraryHost = object : LibraryScreen.Host {
+        override val libraryViewModel: LibraryViewModel
+            get() = this@MainActivity.libraryViewModel
+
+        override val playlistViewModel: PlaylistViewModel
+            get() = this@MainActivity.playlistViewModel
+
+        override val lifecycleScope: LifecycleCoroutineScope
+            get() = this@MainActivity.lifecycleScope
+
+        override fun resolvePlaylistTrack(raw: String): AudioTrack? =
+            this@MainActivity.resolvePlaylistTrack(raw)
+
+        override fun showError(message: String) = this@MainActivity.showError(message)
+
+        override fun showTab(label: Int) = this@MainActivity.showTab(label)
+
+        override fun playTrackList(tracks: List<AudioTrack>, index: Int) =
+            this@MainActivity.playTrackList(tracks, index)
+
+        override fun showTrackMenu(track: AudioTrack, anchor: View) =
+            this@MainActivity.showTrackMenu(track, anchor)
+
+        override fun showTrackDetails(track: AudioTrack) = this@MainActivity.showTrackDetails(track)
+
+        override fun shareDownloadedFile(uri: Uri, mime: String, name: String) =
+            this@MainActivity.shareDownloadedFile(uri, mime, name)
+
+        override fun refreshHistory() = this@MainActivity.refreshHistory()
+
+        override fun launchAudioImport() = this@MainActivity.launchAudioImport()
+
+        override fun openPlaylist(id: Long) = playlistsSection.openPlaylist(id)
+
+        override fun showPlaylistMenu(playlist: SavedPlaylist, anchor: View) =
+            playlistsSection.showPlaylistMenu(playlist, anchor)
+
+        override fun showRecentHistoryCollection() = this@MainActivity.showRecentHistoryCollection()
+
+        /** The activity owns the capture section, so it also owns where it is attached. */
+        override fun attachNowPlayingSection(root: LinearLayout) = buildNowPlayingSection(root)
+
+        override fun newTrackGrid(): GridLayout = newHomeMusicGrid()
+
+        override fun gridColumnCount(): Int = searchGridColumnCount()
+
+        override fun gridCellWidthPx(): Int = searchCellWidthPx()
+
+        override fun gridCardWidth(columns: Int): Int = homeGridCardWidth(columns)
+
+        override fun animateTrackCard(card: View, index: Int) = animateHomeCard(card, index)
+
+        override fun addTrackCard(
+            track: AudioTrack,
+            queue: List<AudioTrack>,
+            index: Int,
+            targetGrid: GridLayout,
+            playedAt: Long?,
+            historyEntryId: Long?,
+        ) = addHomeTrackCard(track, queue, index, targetGrid, playedAt, historyEntryId)
+
+        override fun recentHistory(): RecentHistoryPreview = RecentHistoryPreview(
+            entries = recentHistoryEntries,
+            loading = recentHistoryLoading,
+            loadFailed = recentHistoryLoadFailed,
+            pageSize = RECENT_HISTORY_PAGE_SIZE,
+            previewCount = RECENT_HISTORY_PREVIEW_COUNT,
+        )
+
+        override fun recentHistoryTrack(entry: PlaybackHistoryEntry): AudioTrack =
+            toAudioTrack(entry)
+
+        override fun runOnMain(block: () -> Unit) {
+            runOnUiThread { if (!destroyed) block() }
+        }
+    }
+
+    private val libraryScreen: LibraryScreen by lazy { LibraryScreen(this, libraryHost) }
 
     private fun buildPlayerScreen(scroll: ScrollView) {
         val root = scrollContent(scroll)
@@ -3177,12 +2716,6 @@ class MainActivity :
         Toast.makeText(this, getString(R.string.removed_finished_jobs, removed), Toast.LENGTH_SHORT).show()
     }
 
-    private fun queueActionButton(label: String, action: () -> Unit) = Button(this).apply {
-        text = label
-        styleActionButton(this, false)
-        setOnClickListener { action() }
-    }
-
     private fun refreshPlaybackHistory() {
         recentHistoryGeneration++
         recentHistoryEntries.clear()
@@ -3231,40 +2764,9 @@ class MainActivity :
     }
 
     private fun refreshPlaybackHistoryViews() {
-        if (::libraryRecentHistory.isInitialized) renderLibraryRecentHistory()
+        libraryScreen.renderRecentHistory()
         if (::homeLibraryContent.isInitialized && homeCategory == HOME_CATEGORY_RECENT_PLAYED) {
             renderHomeLibrary()
-        }
-    }
-
-    private fun renderLibraryRecentHistory() {
-        libraryRecentHistory.removeAllViews()
-        if (recentHistoryEntries.isEmpty()) {
-            val message = when {
-                recentHistoryLoadFailed -> getString(R.string.recent_history_load_error)
-                recentHistoryLoading -> getString(R.string.recent_history_loading)
-                else -> getString(R.string.recent_history_empty)
-            }
-            libraryRecentHistory.addView(
-                emptyMessage(message),
-                GridLayout.LayoutParams().apply {
-                    width = MATCH
-                    height = WRAP
-                    columnSpec = GridLayout.spec(0, libraryRecentHistory.columnCount)
-                },
-            )
-            return
-        }
-        val queue = recentHistoryEntries.take(RECENT_HISTORY_PAGE_SIZE).map(::toAudioTrack)
-        recentHistoryEntries.take(RECENT_HISTORY_PREVIEW_COUNT).forEachIndexed { index, entry ->
-            addHomeTrackCard(
-                track = queue[index],
-                queue = queue,
-                index = index,
-                targetGrid = libraryRecentHistory,
-                playedAt = entry.playedAt,
-                historyEntryId = entry.id,
-            )
         }
     }
 
@@ -3331,61 +2833,11 @@ class MainActivity :
 
     private fun refreshHistory() {
         refreshLibrary()
-        refreshDownloadedFiles()
-    }
-
-    private fun refreshDownloadedFiles() {
-        if (!::downloadHistoryList.isInitialized) return
-        lifecycleScope.launch(Dispatchers.IO) {
-            val items = mutableListOf<Triple<String, Long, Pair<String, Uri>>>()
-            var failure: Exception? = null
-            val projection = arrayOf(
-                MediaStore.MediaColumns._ID,
-                MediaStore.MediaColumns.DISPLAY_NAME,
-                MediaStore.MediaColumns.DATE_ADDED,
-                MediaStore.MediaColumns.MIME_TYPE,
-            )
-            try {
-                val cursor = contentResolver.query(
-                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
-                    projection,
-                    "${MediaStore.MediaColumns.RELATIVE_PATH} = ?",
-                    arrayOf("${Environment.DIRECTORY_DOWNLOADS}/yt-dlp/"),
-                    "${MediaStore.MediaColumns.DATE_ADDED} DESC",
-                ) ?: error("Downloads provider returned no cursor")
-                cursor.use {
-                    while (it.moveToNext()) {
-                        val id = it.getLong(it.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
-                        val name = it.getString(it.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME))
-                            ?: getString(R.string.unknown_track)
-                        val date = it.getLong(it.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED))
-                        val mime = it.getString(it.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE))
-                            ?: "application/octet-stream"
-                        val uri = Uri.withAppendedPath(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id.toString())
-                        items.add(Triple(name, date, mime to uri))
-                    }
-                }
-            } catch (caught: Exception) {
-                failure = caught
-            }
-            runOnUiThread {
-                if (destroyed) return@runOnUiThread
-                downloadHistoryList.removeAllViews()
-                if (failure != null) {
-                    addHistoryEmptyMessage(getString(R.string.history_unavailable))
-                } else if (items.isEmpty()) {
-                    addHistoryEmptyMessage(getString(R.string.history_empty))
-                } else {
-                    items.forEach { (name, date, media) ->
-                        addHistoryItem(name, date, media.first, media.second)
-                    }
-                }
-            }
-        }
+        libraryScreen.refreshDownloads()
     }
 
     private fun refreshLibrary() {
-        if (!::libraryList.isInitialized) return
+        if (!libraryScreen.isAttached()) return
         lifecycleScope.launch(Dispatchers.IO) {
             val tracks = mutableListOf<AudioTrack>()
             val errors = mutableListOf<String>()
@@ -3591,108 +3043,6 @@ class MainActivity :
         if (mimeType != null) return mimeType.startsWith("audio/")
         val name = displayName(uri)
         return name.substringAfterLast('.', "").lowercase() in AUDIO_EXTENSIONS
-    }
-
-    private fun addHistoryItem(name: String, dateSeconds: Long, mime: String, uri: Uri) {
-        val card = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = roundedBackground(COLOR_CARD, dp(12))
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-        }
-        card.addView(TextView(this).apply {
-            text = getString(R.string.history_item, name, DateUtils.getRelativeTimeSpanString(dateSeconds * 1000))
-            textSize = 14f
-            setTextColor(COLOR_TEXT)
-            setPadding(0, dp(4), 0, dp(8))
-            setOnClickListener { openDownloadedFile(uri, mime) }
-        }, matchWidth())
-        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        actions.addView(
-            queueActionButton(getString(R.string.rename)) { promptRenameDownload(uri, name) },
-            LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(5) })
-        actions.addView(
-            queueActionButton(getString(R.string.share)) { shareDownloadedFile(uri, mime, name) },
-            LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(5) })
-        actions.addView(
-            queueActionButton(getString(R.string.delete)) { confirmDeleteDownload(uri, name) },
-            LinearLayout.LayoutParams(0, dp(42), 1f)
-        )
-        card.addView(actions, matchWidth())
-        val columns = downloadHistoryList.columnCount.coerceAtLeast(1)
-        val position = downloadHistoryList.childCount
-        downloadHistoryList.addView(
-            card,
-            GridLayout.LayoutParams(
-                GridLayout.spec(position / columns),
-                GridLayout.spec(position % columns),
-            ).apply {
-                width = homeGridCardWidth(columns)
-                height = WRAP
-                setMargins(dp(4), dp(4), dp(4), dp(8))
-            },
-        )
-        animateHomeCard(card, position)
-    }
-
-    private fun openDownloadedFile(uri: Uri, mime: String) {
-        try {
-            startActivity(
-                Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime)
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            )
-        } catch (_: android.content.ActivityNotFoundException) {
-            showError(getString(R.string.no_file_handler))
-        } catch (error: SecurityException) {
-            showError(getString(R.string.file_action_error, error.localizedMessage ?: "permission denied"))
-        }
-    }
-
-    private fun promptRenameDownload(uri: Uri, oldName: String) {
-        val input = EditText(this).apply { setText(oldName); selectAll() }
-        AlertDialog.Builder(this).setTitle(getString(R.string.rename_download)).setView(input)
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.rename) { _, _ ->
-                val newName = input.text.toString().trim()
-                if (newName.isEmpty() || newName.contains('/') || newName.contains('\\')) {
-                    showError(getString(R.string.invalid_download_name))
-                    return@setPositiveButton
-                }
-                try {
-                    val changed = contentResolver.update(
-                        uri,
-                        ContentValues().apply { put(MediaStore.MediaColumns.DISPLAY_NAME, newName) },
-                        null,
-                        null,
-                    )
-                    if (changed <= 0) showError(getString(R.string.file_action_failed))
-                    refreshHistory()
-                } catch (error: Exception) {
-                    showError(
-                        getString(
-                            R.string.file_action_error,
-                            error.localizedMessage ?: error.javaClass.simpleName
-                        )
-                    )
-                }
-            }.show()
-    }
-
-    private fun confirmDeleteDownload(uri: Uri, name: String) {
-        AlertDialog.Builder(this).setMessage(getString(R.string.delete_download_confirm, name))
-            .setNegativeButton(android.R.string.cancel, null)
-            .setPositiveButton(R.string.delete) { _, _ ->
-                try {
-                    if (contentResolver.delete(uri, null, null) <= 0) showError(getString(R.string.file_action_failed))
-                    refreshHistory()
-                } catch (error: Exception) {
-                    showError(
-                        getString(
-                            R.string.file_action_error,
-                            error.localizedMessage ?: error.javaClass.simpleName
-                        )
-                    )
-                }
-            }.show()
     }
 
     private fun shareDownloadedFile(uri: Uri, mime: String, name: String) {
@@ -4378,14 +3728,9 @@ class MainActivity :
         private const val MAX_TRACK_ART_PIXELS = 640
         private const val MAX_CONCURRENT_DOWNLOADS = 10
         private const val MAX_CONTENT_WIDTH_DP = 760
-        private const val LIBRARY_SECTION_SONGS = 0
-        private const val LIBRARY_SECTION_PLAYLISTS = 1
-        /** Group ids for the combined sort/group popup in the library header. */
-        private const val LIBRARY_MENU_SORT = 1
         /** How many captured tracks to keep loaded for the "From YouTube" section. */
         private const val NOW_PLAYING_HISTORY_LIMIT = 40
 
-        private const val LIBRARY_MENU_GROUP = 2
         private const val TAB_TRANSITION_MS = 180L
         private const val RECENT_HISTORY_PAGE_SIZE = 32
         private const val RECENT_HISTORY_PREVIEW_COUNT = 4
