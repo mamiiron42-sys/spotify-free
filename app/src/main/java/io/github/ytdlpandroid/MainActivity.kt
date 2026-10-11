@@ -21,6 +21,7 @@ import android.provider.MediaStore
 import android.content.ContentValues
 import android.text.format.DateUtils
 import android.view.Gravity
+import android.view.Menu
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -60,6 +61,7 @@ import io.github.ytdlpandroid.viewmodel.SearchDownloadState
 import io.github.ytdlpandroid.viewmodel.SearchViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -80,6 +82,19 @@ private data class SearchScreen(
     val rows: List<SearchRow>,
     val isSearching: Boolean,
     val showTitle: Boolean,
+    /**
+     * True while the search stream still has unrevealed results, so the list can offer an
+     * explicit "Load more" row as a fallback to scroll-driven paging.
+     */
+    val hasMoreResults: Boolean,
+)
+
+/** The search stream's paging and error state, combined once so [combine] stays within its arity. */
+private data class SearchScreenState(
+    val isSearching: Boolean,
+    val isLoadingMore: Boolean,
+    val hasMoreResults: Boolean,
+    val error: String?,
 )
 
 /**
@@ -134,9 +149,11 @@ class MainActivity :
     private val playlistAdapter = PlaylistAdapter(this)
     private lateinit var searchResultsTitle: TextView
     private lateinit var searchScrollView: ScrollView
+    private var searchDebounceJob: kotlinx.coroutines.Job? = null
     private lateinit var homeCategories: LinearLayout
     private lateinit var homeSubcategories: LinearLayout
     private lateinit var homeLibraryContent: LinearLayout
+    private lateinit var nowPlayingContent: LinearLayout
     private lateinit var homeMusicGrid: GridLayout
     private lateinit var downloadSettingsContent: LinearLayout
     private lateinit var downloadSettingsToggle: TextView
@@ -154,7 +171,6 @@ class MainActivity :
     private lateinit var libraryList: RecyclerView
     private lateinit var downloadHistoryList: GridLayout
     private lateinit var libraryRecentHistory: GridLayout
-    private lateinit var libraryFilterButton: Button
     private lateinit var librarySortButton: ImageView
     private lateinit var libraryTrackHeading: TextView
     private lateinit var libraryPlayAllButton: Button
@@ -225,6 +241,10 @@ class MainActivity :
     private var playbackSnapshot: PlaybackSnapshot? = null
     private var lastArtworkAnimationUri: String? = null
     private val playlists by lazy { PlaylistStore(this) }
+    // Tracks captured from other apps' media sessions (YouTube / YouTube Music).
+    private val nowPlayingEntries = mutableListOf<NowPlayingEntry>()
+    private var nowPlayingGeneration = 0
+    private var nowPlayingResolving = false
     private val importedUris: Set<String>
         get() =
             getSharedPreferences(PREFERENCES, MODE_PRIVATE).getStringSet(KEY_IMPORTED, emptySet())
@@ -320,7 +340,37 @@ class MainActivity :
         refreshLibrary()
         refreshPlaybackHistory()
         refreshPlaylists()
+        refreshNowPlayingHistory()
+        observeNowPlayingAccess()
         requestMissingPermissions()
+    }
+
+    /**
+     * Re-renders the capture section when the user grants or revokes notification access.
+     * Revocation can only be observed here: nothing is delivered to [onResume] when it happens
+     * in system settings.
+     */
+    private fun observeNowPlayingAccess() {
+        lifecycleScope.launch {
+            NowPlayingListenerService.granted.collect { granted ->
+                if (destroyed) return@collect
+                if (granted) {
+                    refreshNowPlayingHistory()
+                } else if (::nowPlayingContent.isInitialized) {
+                    renderNowPlayingContent()
+                }
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Access may have been granted (or revoked) while the app was in the background; the
+        // listener itself is rebound by the system, we only need the UI to catch up.
+        if (::nowPlayingContent.isInitialized) renderNowPlayingContent()
+        if (NowPlayingListenerService.isGranted(this)) {
+            NowPlayingListenerService.requestRebind(this)
+        }
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
@@ -743,6 +793,9 @@ class MainActivity :
     }
 
     private fun clearOnlineSearch() {
+        // Drop any pending debounced search before clearing so it cannot fire afterwards.
+        searchDebounceJob?.cancel()
+        searchDebounceJob = null
         searchInput.text.clear()
         searchViewModel.clearSearch()
         searchBrowseSection?.visibility = View.VISIBLE
@@ -1512,6 +1565,7 @@ class MainActivity :
             setPadding(0, 0, 0, dp(10))
         })
         root.addView(buildDiscoveryHero(), matchWidth().apply { bottomMargin = dp(12) })
+        buildNowPlayingSection(root)
         val categoryItems = listOf(
             HOME_CATEGORY_MUSIC to R.string.home_category_all,
             HOME_CATEGORY_RECENT_PLAYED to R.string.home_category_recent_played,
@@ -1729,17 +1783,26 @@ class MainActivity :
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                 clearSearchButton.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
                 searchBrowseSection?.visibility = if (s.isNullOrEmpty()) View.VISIBLE else View.GONE
+                // Search as you type, debounced, so results track the query without a tap.
+                searchDebounceJob?.cancel()
+                searchDebounceJob = lifecycleScope.launch {
+                    delay(SEARCH_AUTO_DEBOUNCE_MS)
+                    if (s.isNullOrBlank()) searchViewModel.clearSearch() else searchMusic(s.toString())
+                }
             }
 
             override fun afterTextChanged(s: android.text.Editable?) {}
         })
+        root.addView(searchBox, matchWidth())
         searchButton = Button(this).apply {
             text = getString(R.string.search_music)
             styleActionButton(this, true)
             setOnClickListener { searchMusic() }
         }
-        searchBox.addView(searchButton, LinearLayout.LayoutParams(WRAP, dp(44)))
-        root.addView(searchBox, matchWidth())
+        root.addView(searchButton, matchWidth().apply {
+            topMargin = dp(10)
+            bottomMargin = dp(2)
+        })
 
         val browseSection = buildSearchBrowseAll()
         searchBrowseSection = browseSection
@@ -1933,6 +1996,7 @@ class MainActivity :
             topMargin = dp(4)
             bottomMargin = dp(8)
         })
+        buildNowPlayingSection(root)
 
         val libraryActions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -2198,19 +2262,263 @@ class MainActivity :
             getString(R.string.library_liked_songs_subtitle, liked?.tracks?.size ?: 0)
     }
 
+    /**
+     * Shared "From YouTube" section. Added to both Home and Library so it reads as one
+     * surface rather than two, and so a single refresh keeps both in sync.
+     */
+    private fun buildNowPlayingSection(root: LinearLayout) {
+        root.addView(sectionTitle(getString(R.string.now_playing_section)), matchWidth())
+        nowPlayingContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 0, 0, dp(6))
+        }
+        root.addView(nowPlayingContent, matchWidth().apply { bottomMargin = dp(10) })
+        renderNowPlayingContent()
+    }
+
+    private fun refreshNowPlayingHistory() {
+        nowPlayingGeneration++
+        nowPlayingResolving = false
+        val generation = nowPlayingGeneration
+        lifecycleScope.launch(Dispatchers.IO) {
+            val entries = try {
+                playlists.getNowPlayingHistory(NOW_PLAYING_HISTORY_LIMIT)
+            } catch (error: Exception) {
+                android.util.Log.e("MainActivity", "Could not load captured history", error)
+                emptyList()
+            }
+            runOnUiThread {
+                if (destroyed || generation != nowPlayingGeneration) return@runOnUiThread
+                nowPlayingEntries.clear()
+                nowPlayingEntries.addAll(entries)
+                renderNowPlayingContent()
+            }
+        }
+    }
+
+    private fun renderNowPlayingContent() {
+        if (!::nowPlayingContent.isInitialized || destroyed) return
+        nowPlayingContent.removeAllViews()
+        when {
+            !NowPlayingListenerService.isGranted(this) -> {
+                val body = TextView(this).apply {
+                    text = getString(R.string.now_playing_enable_body)
+                    textSize = 13f
+                    setTextColor(COLOR_MUTED)
+                    setPadding(0, 0, 0, dp(10))
+                }
+                val action = Button(this).apply {
+                    text = getString(R.string.now_playing_enable_action)
+                    styleActionButton(this, true)
+                    setOnClickListener { startActivity(NowPlayingListenerService.listenerSettingsIntent()) }
+                }
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = roundedBackground(COLOR_SURFACE, dp(12))
+                    setPadding(dp(14), dp(14), dp(14), dp(14))
+                    addView(TextView(this@MainActivity).apply {
+                        text = getString(R.string.now_playing_enable_title)
+                        textSize = 15f
+                        setTypeface(null, android.graphics.Typeface.BOLD)
+                        setTextColor(COLOR_TEXT)
+                        setPadding(0, 0, 0, dp(4))
+                    })
+                    addView(body)
+                    addView(action, LinearLayout.LayoutParams(WRAP, dp(44)))
+                }
+                nowPlayingContent.addView(card, matchWidth())
+            }
+
+            nowPlayingEntries.isEmpty() -> nowPlayingContent.addView(
+                emptyMessage(getString(R.string.now_playing_empty)),
+                matchWidth(),
+            )
+
+            else -> {
+                nowPlayingEntries.forEach { entry -> addNowPlayingCard(entry) }
+                val clear = Button(this).apply {
+                    text = getString(R.string.now_playing_clear)
+                    styleActionButton(this, false)
+                    setOnClickListener { confirmClearNowPlayingHistory() }
+                }
+                nowPlayingContent.addView(clear, LinearLayout.LayoutParams(MATCH, dp(44)).apply {
+                    topMargin = dp(8)
+                })
+                // Entries captured before the real video id was known still need one so they
+                // can be downloaded and can show artwork.
+                resolvePendingVideoIds()
+            }
+        }
+    }
+
+    private fun addNowPlayingCard(entry: NowPlayingEntry) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = roundedBackground(COLOR_SURFACE, dp(8))
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+        }
+        val artwork = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = roundedBackground(COLOR_BACKGROUND, dp(6))
+            contentDescription = getString(R.string.track_artwork)
+        }
+        // Only a resolved video id yields an i.ytimg.com thumbnail, which is also the only
+        // remote host the image loader trusts; unresolved entries fall back to the placeholder.
+        val resolvedId = entry.videoId.takeIf { !it.startsWith(PENDING_KEY_PREFIX) }
+        artwork.loadTrustedThumbnail(resolvedId?.let { "https://i.ytimg.com/vi/$it/hqdefault.jpg" })
+        row.addView(artwork, LinearLayout.LayoutParams(dp(52), dp(52)))
+
+        val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        labels.addView(TextView(this).apply {
+            text = entry.title
+            textSize = 15f
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(COLOR_TEXT)
+        })
+        labels.addView(TextView(this).apply {
+            text = entry.artist.ifBlank { getString(R.string.now_playing_source_other) }
+            textSize = 13f
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setTextColor(COLOR_MUTED)
+        })
+        row.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(12) })
+
+        row.addView(
+            iconButton(
+                iconRes = R.drawable.ic_download,
+                description = getString(R.string.now_playing_download),
+                tint = COLOR_ACCENT,
+                sizeDp = 44,
+                insetDp = 11,
+            ) { downloadNowPlayingEntry(entry) },
+            LinearLayout.LayoutParams(dp(44), dp(44)),
+        )
+        row.addView(
+            iconButton(
+                iconRes = R.drawable.ic_close,
+                description = getString(R.string.now_playing_clear),
+                tint = COLOR_MUTED,
+                sizeDp = 44,
+                insetDp = 11,
+            ) { removeNowPlayingEntry(entry) },
+            LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginStart = dp(2) },
+        )
+        nowPlayingContent.addView(row, matchWidth().apply { topMargin = dp(6) })
+    }
+
+    /**
+     * Captured tracks are stored under a title-derived key because the media session does not
+     * expose the video id. Resolving one real id via a single-result search turns the entry
+     * into a downloadable link and unlocks artwork.
+     */
+    private fun resolvePendingVideoIds() {
+        if (nowPlayingResolving) return
+        val pending = nowPlayingEntries.firstOrNull { it.videoId.startsWith(PENDING_KEY_PREFIX) } ?: return
+        val service = downloadService ?: return
+        nowPlayingResolving = true
+        service.searchMusic("${pending.title} ${pending.artist}", 0, 1) { result ->
+            nowPlayingResolving = false
+            if (destroyed) return@searchMusic
+            result.onSuccess { matches ->
+                val match = matches.firstOrNull()
+                val videoId = match?.let { VideoIds.fromUrl(it.url) }
+                if (videoId != null) {
+                    val resolved = pending.copy(videoId = videoId)
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        try {
+                            // Insert under the real id, then drop the placeholder row, and keep
+                            // the new row's id locally so a later remove still finds it.
+                            playlists.recordNowPlaying(resolved)
+                            playlists.deleteNowPlayingEntry(pending.id)
+                        } catch (error: Exception) {
+                            android.util.Log.e("MainActivity", "Could not resolve captured track", error)
+                        }
+                    }
+                    val index = nowPlayingEntries.indexOf(pending)
+                    if (index >= 0) nowPlayingEntries[index] = resolved
+                    renderNowPlayingContent()
+                }
+            }
+        }
+    }
+
+    private fun downloadNowPlayingEntry(entry: NowPlayingEntry) {
+        val service = downloadService
+        if (service == null) {
+            showError(getString(R.string.now_playing_search_failed, entry.title))
+            return
+        }
+        if (!entry.videoId.startsWith(PENDING_KEY_PREFIX)) {
+            enqueueUrls(listOf(entry.watchUrl), showStatus = false)
+            showError(getString(R.string.now_playing_download_queued, entry.title))
+            return
+        }
+        // Not resolved yet: find the video id now, then enqueue the real watch URL.
+        service.searchMusic("${entry.title} ${entry.artist}", 0, 1) { result ->
+            if (destroyed) return@searchMusic
+            val videoId = result.getOrNull()?.firstOrNull()?.let { VideoIds.fromUrl(it.url) }
+            if (videoId == null) {
+                showError(getString(R.string.now_playing_search_failed, entry.title))
+            } else {
+                enqueueUrls(listOf("https://www.youtube.com/watch?v=$videoId"), showStatus = false)
+                showError(getString(R.string.now_playing_download_queued, entry.title))
+            }
+        }
+    }
+
+    private fun removeNowPlayingEntry(entry: NowPlayingEntry) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val removed = try {
+                playlists.deleteNowPlayingEntry(entry.id)
+            } catch (error: Exception) {
+                android.util.Log.e("MainActivity", "Could not remove captured entry", error)
+                false
+            }
+            runOnUiThread {
+                if (destroyed) return@runOnUiThread
+                if (removed) {
+                    nowPlayingEntries.remove(entry)
+                    renderNowPlayingContent()
+                } else {
+                    showError(getString(R.string.now_playing_remove_failed))
+                }
+            }
+        }
+    }
+
+    private fun confirmClearNowPlayingHistory() {
+        if (nowPlayingEntries.isEmpty()) return
+        AlertDialog.Builder(this)
+            .setMessage(getString(R.string.now_playing_clear_confirm))
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton(R.string.now_playing_clear) { _, _ ->
+                lifecycleScope.launch(Dispatchers.IO) {
+                    val cleared = try {
+                        playlists.clearNowPlayingHistory() > 0
+                    } catch (error: Exception) {
+                        android.util.Log.e("MainActivity", "Could not clear captured history", error)
+                        false
+                    }
+                    runOnUiThread {
+                        if (destroyed) return@runOnUiThread
+                        if (cleared) {
+                            nowPlayingEntries.clear()
+                            renderNowPlayingContent()
+                        } else {
+                            showError(getString(R.string.now_playing_clear_failed))
+                        }
+                    }
+                }
+            }
+            .show()
+    }
+
     /** Songs section: group/sort controls, track grid, recent history and downloads. */
     private fun buildLibrarySongsContent(root: LinearLayout) {
-        val libraryViewControls = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
-        libraryFilterButton = Button(this).apply {
-            styleLibraryDropdown(this)
-            setOnClickListener { showLibraryGroupMenu(this) }
-        }
-        libraryViewControls.addView(libraryFilterButton, matchWidth())
-        root.addView(libraryViewControls, matchWidth().apply { topMargin = dp(12) })
-        updateLibraryControlLabels(libraryViewModel.groupMode.value, libraryViewModel.sortMode.value)
-
         val trackHeading = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -2266,29 +2574,13 @@ class MainActivity :
         root.addView(downloadHistoryList, matchWidth())
     }
 
-    private fun styleLibraryDropdown(button: Button) {
-        button.isAllCaps = false
-        button.textSize = 12f
-        button.gravity = Gravity.CENTER
-        button.maxLines = 1
-        button.ellipsize = android.text.TextUtils.TruncateAt.END
-        button.setTextColor(COLOR_TEXT)
-        button.background = roundedBackground(COLOR_SURFACE, dp(20))
-        button.setPadding(dp(10), 0, dp(10), 0)
-        button.minWidth = 0
-        button.minHeight = dp(40)
-        button.stateListAnimator = null
-    }
 
-    /** Circular transparent icon button, matching Spotify's header affordances. */
-
+    /**
+     * The library controls are now one icon button, so the active sort lives in its
+     * content description rather than replacing the glyph.
+     */
     private fun updateLibraryControlLabels(groupMode: Int, sortMode: Int) {
-        if (!::libraryFilterButton.isInitialized || !::librarySortButton.isInitialized) return
-        val filterLabel = when (groupMode) {
-            LibraryViewModel.GROUP_ARTIST -> getString(R.string.library_group_artist)
-            LibraryViewModel.GROUP_ALBUM -> getString(R.string.library_group_album)
-            else -> getString(R.string.library_filter_all)
-        }
+        if (!::librarySortButton.isInitialized) return
         val sortLabel = getString(
             when (sortMode) {
                 LibraryViewModel.SORT_ARTIST -> R.string.library_sort_artist
@@ -2297,43 +2589,60 @@ class MainActivity :
                 else -> R.string.library_sort_title
             },
         )
-        libraryFilterButton.text = getString(R.string.library_filter_button, filterLabel)
-        // The sort control is an icon button, so the active sort lives in its
-        // description rather than replacing the glyph.
-        librarySortButton.contentDescription = getString(R.string.library_sort_button, sortLabel)
-    }
-
-    private fun showLibraryGroupMenu(anchor: View) {
-        val options = listOf(
-            LibraryViewModel.GROUP_NONE to R.string.library_filter_all,
-            LibraryViewModel.GROUP_ARTIST to R.string.library_group_artist,
-            LibraryViewModel.GROUP_ALBUM to R.string.library_group_album,
+        val groupLabel = getString(
+            when (groupMode) {
+                LibraryViewModel.GROUP_ARTIST -> R.string.library_group_artist
+                LibraryViewModel.GROUP_ALBUM -> R.string.library_group_album
+                else -> R.string.library_group_all
+            },
         )
-        android.widget.PopupMenu(this, anchor).apply {
-            options.forEach { (mode, label) -> menu.add(0, mode, mode, label) }
-            setOnMenuItemClickListener { item ->
-                libraryViewModel.setGroupMode(item.itemId)
-                true
-            }
-            show()
-        }
+        librarySortButton.contentDescription =
+            getString(R.string.library_sort_menu_button, sortLabel, groupLabel)
     }
 
+    /**
+     * Single menu driving both sort and grouping. The old layout also had a full-width
+     * "View: ..." pill that duplicated the sort control, which is what the library screens
+     * read as an oversized box.
+     */
     private fun showLibrarySortMenu(anchor: View) {
-        val options = listOf(
+        val popup = android.widget.PopupMenu(this, anchor)
+        val sortSub = popup.menu.addSubMenu(
+            Menu.NONE,
+            LIBRARY_MENU_SORT,
+            Menu.NONE,
+            getString(R.string.library_sort_submenu),
+        )
+        listOf(
             LibraryViewModel.SORT_TITLE to R.string.library_sort_title,
             LibraryViewModel.SORT_ARTIST to R.string.library_sort_artist,
             LibraryViewModel.SORT_ALBUM to R.string.library_sort_album,
             LibraryViewModel.SORT_DATE_ADDED to R.string.library_sort_recent,
-        )
-        android.widget.PopupMenu(this, anchor).apply {
-            options.forEach { (mode, label) -> menu.add(0, mode, mode, label) }
-            setOnMenuItemClickListener { item ->
-                libraryViewModel.setSortMode(item.itemId)
-                true
-            }
-            show()
+        ).forEach { (mode, label) ->
+            sortSub.add(LIBRARY_MENU_SORT, mode, Menu.NONE, label)
         }
+        val groupSub = popup.menu.addSubMenu(
+            Menu.NONE,
+            LIBRARY_MENU_GROUP,
+            Menu.NONE,
+            getString(R.string.library_group_submenu),
+        )
+        listOf(
+            LibraryViewModel.GROUP_NONE to R.string.library_group_all,
+            LibraryViewModel.GROUP_ARTIST to R.string.library_group_artist,
+            LibraryViewModel.GROUP_ALBUM to R.string.library_group_album,
+        ).forEach { (mode, label) ->
+            groupSub.add(LIBRARY_MENU_GROUP, mode, Menu.NONE, label)
+        }
+        popup.setOnMenuItemClickListener { item ->
+            when (item.groupId) {
+                LIBRARY_MENU_SORT -> libraryViewModel.setSortMode(item.itemId)
+                LIBRARY_MENU_GROUP -> libraryViewModel.setGroupMode(item.itemId)
+                else -> return@setOnMenuItemClickListener false
+            }
+            true
+        }
+        popup.show()
     }
 
     /**
@@ -2864,7 +3173,9 @@ class MainActivity :
         val query = (queryOverride ?: searchInput.text.toString()).trim()
         showTab(R.string.nav_search)
         if (query.isNotEmpty()) {
-            searchInput.setText(query)
+            // Only rewrite the field when the trimmed text differs, otherwise the
+            // search-as-you-type watcher would re-enter and restart the search forever.
+            if (searchInput.text.toString() != query) searchInput.setText(query)
             searchBrowseSection?.visibility = View.GONE
         }
         searchViewModel.search(query)
@@ -2878,40 +3189,52 @@ class MainActivity :
     private fun observeSearch() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                combine(
-                    searchViewModel.searchResults,
+                val searchState = combine(
                     searchViewModel.isSearching,
                     searchViewModel.isLoadingMore,
+                    searchViewModel.hasMoreResults,
                     searchViewModel.searchError,
+                ) { isSearching, isLoadingMore, hasMoreResults, error ->
+                    SearchScreenState(isSearching, isLoadingMore, hasMoreResults, error)
+                }
+                combine(
+                    searchViewModel.searchResults,
+                    searchState,
                     combine(
                         searchViewModel.downloadStatusByUrl,
                         searchViewModel.libraryVideoIds,
                     ) { byUrl, libraryIds -> byUrl to libraryIds },
-                ) { results, isSearching, isLoadingMore, error, (statusByUrl, libraryIds) ->
-                    val rows = ArrayList<SearchRow>(results.size + 2)
+                ) { results, state, (statusByUrl, libraryIds) ->
+                    val rows = ArrayList<SearchRow>(results.size + 3)
                     results.forEach {
                         rows += SearchRow.Result(it, searchViewModel.downloadStateFor(it.url, statusByUrl, libraryIds))
                     }
                     when {
-                        results.isNotEmpty() && error != null ->
+                        results.isNotEmpty() && state.error != null ->
                             // A failed page with results already on screen: keep the list and
                             // offer a retry rather than dead-ending it.
-                            rows += SearchRow.Message(error, retryable = true)
+                            rows += SearchRow.Message(state.error, retryable = true)
 
                         results.isEmpty() -> rows += SearchRow.Message(
                             text = when {
-                                isSearching -> getString(R.string.searching)
-                                error != null -> error
+                                state.isSearching -> getString(R.string.searching)
+                                state.error != null -> state.error
                                 else -> getString(R.string.search_prompt)
                             },
                             retryable = false,
                         )
                     }
-                    if (isLoadingMore) rows += SearchRow.LoadingFooter
+                    // Explicit fallback so an endless feed never depends on the scroll
+                    // heuristic alone; the spinner below it covers automatic paging.
+                    if (results.isNotEmpty() && state.hasMoreResults && !state.isLoadingMore && !state.isSearching) {
+                        rows += SearchRow.Message(getString(R.string.load_more), retryable = true)
+                    }
+                    if (state.isLoadingMore) rows += SearchRow.LoadingFooter
                     SearchScreen(
                         rows = rows,
-                        isSearching = isSearching,
-                        showTitle = results.isNotEmpty() || error != null || isSearching,
+                        isSearching = state.isSearching,
+                        showTitle = results.isNotEmpty() || state.error != null || state.isSearching,
+                        hasMoreResults = state.hasMoreResults,
                     )
                 }.collect(::renderSearch)
             }
@@ -2924,9 +3247,15 @@ class MainActivity :
             // A completed page changes the ScrollView's content height but does not itself
             // produce a scroll callback. Re-check after RecyclerView has committed and laid out
             // the appended rows, so paging can continue whenever the viewport is still near end.
-            searchResults.post { maybeLoadMoreSearchResults() }
+            if (screen.hasMoreResults) searchResults.post { maybeLoadMoreSearchResults() }
         }
         searchResultsTitle.visibility = if (screen.showTitle) View.VISIBLE else View.GONE
+        val resultCount = screen.rows.count { it is SearchRow.Result }
+        searchResultsTitle.text = if (resultCount > 0) {
+            getString(R.string.search_results_count, resultCount)
+        } else {
+            getString(R.string.search_results)
+        }
         searchBrowseSection?.visibility = if (screen.showTitle || searchInput.text.isNotEmpty()) View.GONE else View.VISIBLE
         searchButton.isEnabled = !screen.isSearching
         searchButton.alpha = if (screen.isSearching) 0.65f else 1f
@@ -4917,8 +5246,20 @@ class MainActivity :
         private const val MAX_M3U_BYTES = 1024 * 1024
         private const val MAX_CONCURRENT_DOWNLOADS = 10
         private const val MAX_CONTENT_WIDTH_DP = 760
+        private const val SEARCH_AUTO_DEBOUNCE_MS = 350L
         private const val LIBRARY_SECTION_SONGS = 0
         private const val LIBRARY_SECTION_PLAYLISTS = 1
+        /** Group ids for the combined sort/group popup in the library header. */
+        private const val LIBRARY_MENU_SORT = 1
+        /** How many captured tracks to keep loaded for the "From YouTube" section. */
+        private const val NOW_PLAYING_HISTORY_LIMIT = 40
+
+        /**
+         * Marks an entry captured before its video id was resolved. The session metadata does
+         * not carry the id, so these are resolved lazily via a one-result search.
+         */
+        private const val PENDING_KEY_PREFIX = "key:"
+        private const val LIBRARY_MENU_GROUP = 2
         private const val TAB_TRANSITION_MS = 180L
         private const val RECENT_HISTORY_PAGE_SIZE = 32
         private const val RECENT_HISTORY_PREVIEW_COUNT = 4

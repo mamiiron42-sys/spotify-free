@@ -169,6 +169,32 @@ def _validate_urls(urls_json):
     return urls
 
 
+def _is_playable_video(entry):
+    """True when a flat search entry is a YouTube video we can actually play.
+
+    Search pages mix in channels and playlists, so paging has to skip them; doing it here
+    keeps the offset/limit window meaningful.
+    """
+    if not isinstance(entry, dict):
+        return False
+    if entry.get("ie_key") not in (None, "Youtube"):
+        return False
+    video_id = entry.get("id")
+    title = entry.get("title")
+    if not isinstance(video_id, str) or not video_id:
+        return False
+    if not isinstance(title, str) or not title:
+        return False
+    webpage_url = entry.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        parsed = urlsplit(webpage_url)
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and parsed.hostname in {
+        "www.youtube.com", "youtube.com", "music.youtube.com",
+    }
+
+
 class _SearchSession:
     """An open YouTube search whose result stream is consumed incrementally.
 
@@ -192,11 +218,20 @@ class _SearchSession:
         self.iterator = iter((info or {}).get("entries") or [])
 
     def fill(self, count):
+        """Collect the next playable results until at least [count] are buffered.
+
+        Only entries that are playable videos are buffered. Filtering while filling rather
+        than after slicing is what keeps paging alive: a page of channels or playlists used
+        to consume an offset and return nothing, which looked like the end of the results.
+        """
         while len(self.entries) < count and not self.exhausted:
             try:
-                self.entries.append(next(self.iterator))
+                entry = next(self.iterator)
             except StopIteration:
                 self.exhausted = True
+                break
+            if _is_playable_video(entry):
+                self.entries.append(entry)
         return self.entries
 
     def close(self):
@@ -249,25 +284,11 @@ def search_music(query, callback, offset=0, limit=20):
     with session.lock:
         entries = list(session.fill(end)[offset:end])
     for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        # Search pages can include channels and playlists; only videos are playable results.
-        if entry.get("ie_key") not in (None, "Youtube"):
-            continue
-        video_id = entry.get("id")
-        title = entry.get("title")
-        if not isinstance(video_id, str) or not video_id or not isinstance(title, str) or not title:
-            continue
-        webpage_url = entry.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}"
-        try:
-            parsed = urlsplit(webpage_url)
-        except ValueError:
-            continue
-        if parsed.scheme != "https" or parsed.hostname not in {"www.youtube.com", "youtube.com", "music.youtube.com"}:
-            continue
+        # Already filtered while filling; normalise for JSON.
+        webpage_url = entry.get("webpage_url") or f"https://www.youtube.com/watch?v={entry['id']}"
         results.append({
-            "id": video_id,
-            "title": title,
+            "id": entry["id"],
+            "title": entry["title"],
             "url": webpage_url,
             "uploader": entry.get("uploader") or entry.get("channel") or "",
             "duration": _finite_number(entry.get("duration")),

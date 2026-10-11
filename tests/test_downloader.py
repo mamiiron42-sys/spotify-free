@@ -271,6 +271,23 @@ class DownloaderTests(unittest.TestCase):
         self.downloader.search_music("songs", FakeCallback(), 0, 20)
         self.assertEqual(len(FAKE_STATE.search_calls), 2)
 
+    def test_search_paging_survives_non_video_entries(self):
+        # Channels and playlists used to be dropped after slicing, so a page full of them
+        # consumed an offset and returned nothing, which ended scrolling early.
+        entries = []
+        for index in range(20):
+            entries.append({"id": f"video-{index}", "title": f"Song {index}"})
+            entries.append({"id": f"UC{index}", "title": f"Channel {index}", "ie_key": "YoutubeTab"})
+        entries.append({"id": "video-20", "title": "Song 20"})
+        FAKE_STATE.search_info = {"entries": entries}
+
+        first = json.loads(self.downloader.search_music("songs", FakeCallback(), 0, 20))
+        second = json.loads(self.downloader.search_music("songs", FakeCallback(), 20, 20))
+
+        self.assertEqual(len(first), 20)
+        self.assertEqual(first[0]["title"], "Song 0")
+        self.assertEqual([result["id"] for result in second], ["video-20"])
+
     def test_search_skips_channel_and_playlist_entries(self):
         FAKE_STATE.search_info = {"entries": [
             {"id": "UCchannel", "title": "A channel", "ie_key": "YoutubeTab"},

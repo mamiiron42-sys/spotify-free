@@ -105,7 +105,6 @@
     <string name="download_details_unavailable">No additional details were reported for this job.</string>
     <string name="library_search_hint">Filter by title, artist, or album</string>
     <string name="library_filter_all">All tracks</string>
-    <string name="library_filter_button">View: %1$s</string>
     <string name="library_sort_button">Sort: %1$s</string>
     <string name="library_group_artist">Artists</string>
     <string name="library_group_album">Albums</string>
@@ -250,8 +249,10 @@
     <string name="search_music">Search</string>
     <string name="search_no_results">No matches found. Try a different query.</string>
     <string name="search_prompt">Search for a track or artist to get started.</string>
+    <string name="load_more">Load more</string>
     <string name="search_query_required">Enter a search query or URL.</string>
     <string name="search_results">Search results</string>
+    <string name="search_results_count">Search results · %1$d</string>
     <string name="search_service_unavailable">Download service is not ready yet.</string>
     <string name="searching">Searching…</string>
     <string name="state_canceled">Canceled</string>
@@ -284,7 +285,28 @@
     <string name="library_filter_tracks">Songs</string>
     <string name="library_liked_songs_subtitle">Pinned · %1$d songs</string>
     <string name="liked_songs_empty">No liked songs yet</string>
-    <string name="library_sort_menu">Change library sort order</string>
+    <string name="library_sort_menu">Change library sort and grouping</string>
+    <string name="library_sort_menu_button">Sort: %1$s, group: %2$s</string>
+    <string name="library_sort_submenu">Sort by</string>
+    <string name="library_group_submenu">Group by</string>
+    <string name="library_group_all">All tracks</string>
     <string name="playlist_row_accessibility">Playlist %1$s, %2$d songs</string>
     <string name="playlist_menu_accessibility">Options for playlist %1$s</string>
+
+    <!-- Now-playing capture -->
+    <string name="now_playing_listener_label">Listening capture</string>
+    <string name="now_playing_section">From YouTube</string>
+    <string name="now_playing_enable_title">See what you play on YouTube</string>
+    <string name="now_playing_enable_body">Grant notification access and this app records what YouTube and YouTube Music play, so your recommendations and downloads start from your own listening.</string>
+    <string name="now_playing_enable_action">Grant access</string>
+    <string name="now_playing_enable_pending">Waiting for access…</string>
+    <string name="now_playing_empty">Nothing captured yet. Play something on YouTube and it will show up here.</string>
+    <string name="now_playing_clear">Clear captured history</string>
+    <string name="now_playing_clear_confirm">Remove all captured playback from YouTube?</string>
+    <string name="now_playing_clear_failed">Could not clear captured history</string>
+    <string name="now_playing_remove_failed">Could not remove this entry</string>
+    <string name="now_playing_download">Download</string>
+    <string name="now_playing_download_queued">Downloading %1$s</string>
+    <string name="now_playing_search_failed">Could not find %1$s</string>
+    <string name="now_playing_source_other">Played elsewhere</string>
 </resources>
