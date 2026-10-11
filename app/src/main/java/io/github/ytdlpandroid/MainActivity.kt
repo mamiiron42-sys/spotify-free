@@ -165,6 +165,7 @@ class MainActivity :
     private lateinit var libraryList: RecyclerView
     private lateinit var downloadHistoryList: GridLayout
     private lateinit var playbackQueueList: LinearLayout
+    private lateinit var playerScreenRoot: LinearLayout
     private var snackbarView: LinearLayout? = null
     private var renderedQueueSignature: String? = null
     private var snackbarHideHandle: Runnable? = null
@@ -1058,6 +1059,37 @@ class MainActivity :
             updatePlaybackLikeState()
         } catch (error: Exception) {
             showError(error.localizedMessage ?: getString(R.string.playlist_track_failed))
+        }
+    }
+
+    /**
+     * Tints the player background from the current artwork, the way Spotify's now-playing
+     * screen fades from the album colours down to the base black. Falls back to the static
+     * green-to-black gradient when the artwork has no usable colour, so the screen never
+     * renders flat black.
+     */
+    private fun applyArtworkGradient(bitmap: android.graphics.Bitmap) {
+        val dominant = runCatching {
+            androidx.palette.graphics.Palette.from(bitmap).maximumColorCount(16)
+                .generate()
+                .dominantSwatch
+                ?.rgb
+        }.getOrNull()
+        val accent = dominant
+            ?.takeIf { it != android.graphics.Color.TRANSPARENT }
+            ?: COLOR_HERO_MIDDLE
+        val darkened = androidx.core.graphics.ColorUtils.blendARGB(
+            accent,
+            COLOR_BACKGROUND,
+            PLAYER_GRADIENT_ART_BLEND,
+        )
+        if (!::playerScreenRoot.isInitialized || playerScreenRoot.background == null) {
+            playerScreenRoot.background = verticalGradient(
+                intArrayOf(darkened, COLOR_BACKGROUND),
+            )
+        } else {
+            (playerScreenRoot.background as? GradientDrawable)?.colors =
+                intArrayOf(darkened, COLOR_BACKGROUND)
         }
     }
 
@@ -2915,7 +2947,8 @@ class MainActivity :
 
     private fun buildPlayerScreen(scroll: ScrollView) {
         val root = scrollContent(scroll)
-        // Spotify's now-playing screen fades from an art-derived tint down to the base black.
+        playerScreenRoot = root
+        // Starts on the neutral gradient and is re-tinted from the artwork on every track.
         root.background = verticalGradient(intArrayOf(COLOR_HERO_MIDDLE, COLOR_BACKGROUND))
 
         val header = LinearLayout(this).apply {
@@ -5051,7 +5084,10 @@ class MainActivity :
                 track.artist,
             )
             playerArtwork.setImageResource(android.R.drawable.ic_media_play)
-            track.artwork?.let { playerArtwork.setImageBitmap(it) }
+            track.artwork?.let { bitmap ->
+                playerArtwork.setImageBitmap(bitmap)
+                applyArtworkGradient(bitmap)
+            }
             if (trackChanged && animationsEnabled()) {
                 playerArtwork.animate().cancel()
                 playerArtwork.alpha = 0.72f
@@ -5423,6 +5459,9 @@ class MainActivity :
         private const val REQUEST_IMPORT_M3U = 12
         private const val REQUEST_EXPORT_M3U = 13
         private const val SNACKBAR_DURATION_MS = 4500L
+
+        /** How far the artwork colour is pushed toward the base black in the player gradient. */
+        private const val PLAYER_GRADIENT_ART_BLEND = 0.42f
         private const val PREFERENCES = "downloader_preferences"
         private const val KEY_FORMAT = "format_mode"
         private const val KEY_IMPORTED = "imported_audio_uris"

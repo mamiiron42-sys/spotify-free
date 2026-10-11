@@ -34,6 +34,9 @@ android {
 }
 
 dependencies {
+    // Artwork-derived colours for the now-playing gradient.
+    implementation("androidx.palette:palette-ktx:1.0.0")
+
     // Unit tests for pure logic (no Android framework classes touched).
     testImplementation("junit:junit:4.13.2")
     // 6.0-2.LTS is the last release line shipping all four ABIs, including armeabi-v7a
