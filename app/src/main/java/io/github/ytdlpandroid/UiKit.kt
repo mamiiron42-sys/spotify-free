@@ -10,6 +10,8 @@ import android.view.animation.OvershootInterpolator
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.text.TextUtils
+import android.widget.ArrayAdapter
 import android.widget.TextView
 
 /**
@@ -54,6 +56,68 @@ internal fun likedSongsGradient(radiusPx: Float = 0f) = GradientDrawable(
     GradientDrawable.Orientation.TL_BR,
     intArrayOf(Color.rgb(80, 56, 160), Color.rgb(139, 92, 246)),
 ).apply { cornerRadius = radiusPx }
+
+    fun Context.windowWidthPx(): Int =
+        resources.configuration.screenWidthDp.takeIf { it > 0 }?.let(::dp)
+            ?: resources.displayMetrics.widthPixels
+
+    fun Context.sectionTitle(value: String) = TextView(this).apply {
+        text = value; textSize = 20f; setTypeface(null, android.graphics.Typeface.BOLD)
+        setTextColor(COLOR_TEXT); setPadding(0, dp(4), 0, dp(8))
+    }
+
+    fun Context.sectionCard() = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = roundedBackground(COLOR_CARD, dp(16))
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        elevation = dp(2).toFloat()
+    }
+
+    fun Context.emptyMessage(message: String) = TextView(this).apply {
+        text = message; textSize = 14f; setTextColor(COLOR_MUTED); setPadding(dp(4), dp(10), dp(4), dp(10))
+    }
+
+    fun Context.formatTime(milliseconds: Long): String {
+        val seconds = (milliseconds.coerceAtLeast(0) / 1000)
+        return "%d:%02d".format(seconds / 60, seconds % 60)
+    }
+
+    fun Context.styledSpinnerAdapter(items: List<String>): ArrayAdapter<String> =
+        object : ArrayAdapter<String>(
+            this,
+            android.R.layout.simple_spinner_item,
+            items,
+        ) {
+            private fun styleItem(view: View): View = (view as? TextView)?.apply {
+                setTextColor(COLOR_TEXT)
+                textSize = 15f
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                minHeight = dp(48)
+                setBackgroundColor(COLOR_SURFACE)
+            } ?: view
+
+            override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View =
+                styleItem(super.getView(position, convertView, parent))
+
+            override fun getDropDownView(position: Int, convertView: View?, parent: android.view.ViewGroup): View =
+                styleItem(super.getDropDownView(position, convertView, parent))
+        }
+
+    fun Context.marqueeLabel(
+        sizeSp: Float,
+        color: Int = COLOR_TEXT,
+        bold: Boolean = false,
+    ): TextView = TextView(this).apply {
+        textSize = sizeSp
+        maxLines = 1
+        ellipsize = android.text.TextUtils.TruncateAt.MARQUEE
+        isSelected = true
+        marqueeRepeatLimit = -1
+        setHorizontallyScrolling(true)
+        isFocusable = true
+        setTextColor(color)
+        if (bold) setTypeface(null, android.graphics.Typeface.BOLD)
+    }
 
 internal fun animationsEnabled(): Boolean = ValueAnimator.areAnimatorsEnabled()
 

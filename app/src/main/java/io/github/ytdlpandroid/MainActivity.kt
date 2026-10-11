@@ -1673,11 +1673,9 @@ class MainActivity :
         renderHomeLibrary()
     }
 
-
     private fun buildSearchScreen(scroll: ScrollView) {
         searchSection.attachTo(scroll)
     }
-
 
     private fun buildDiscoveryHero(): View = FrameLayout(this).apply {
         val compact = resources.configuration.screenWidthDp < 380
@@ -1801,7 +1799,6 @@ class MainActivity :
     }
 
     private val searchSection by lazy { SearchSection(this, searchHost) }
-
 
     private fun buildQueueScreen(scroll: ScrollView) {
         val root = scrollContent(scroll)
@@ -2281,7 +2278,6 @@ class MainActivity :
         }
     }
 
-
     /** Songs section: group/sort controls, track grid, recent history and downloads. */
     private fun buildLibrarySongsContent(root: LinearLayout) {
         val trackHeading = LinearLayout(this).apply {
@@ -2338,7 +2334,6 @@ class MainActivity :
         downloadHistoryList = newHomeMusicGrid()
         root.addView(downloadHistoryList, matchWidth())
     }
-
 
     /**
      * The library controls are now one icon button, so the active sort lives in its
@@ -2908,11 +2903,6 @@ class MainActivity :
         }
     }
 
-    private fun sectionTitle(value: String) = TextView(this).apply {
-        text = value; textSize = 20f; setTypeface(null, android.graphics.Typeface.BOLD)
-        setTextColor(COLOR_TEXT); setPadding(0, dp(4), 0, dp(8))
-    }
-
     private fun restoreSettings() {
         val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
         formatSpinner.setSelection(preferences.getInt(KEY_FORMAT, formatModes.lastIndex).coerceIn(formatModes.indices))
@@ -2996,11 +2986,9 @@ class MainActivity :
         searchSection.render(screen)
     }
 
-
     private fun maybeLoadMoreSearchResults() {
         searchSection.maybeLoadMoreSearchResults()
     }
-
 
     private fun enqueueUrls(urls: List<String>, showStatus: Boolean = true) {
         val validUrls = urls.distinctBy { it.lowercase() }
@@ -4968,31 +4956,6 @@ class MainActivity :
             .start()
     }
 
-    /**
-     * Single-line label that scrolls its text when it does not fit, like Spotify's now-
-     * playing rows. Selecting the view is what enables marquee on a TextView; the text must
-     * also be non-empty for it to start.
-     */
-    private fun marqueeLabel(
-        sizeSp: Float,
-        color: Int = COLOR_TEXT,
-        bold: Boolean = false,
-    ): TextView = TextView(this).apply {
-        textSize = sizeSp
-        maxLines = 1
-        ellipsize = android.text.TextUtils.TruncateAt.MARQUEE
-        isSelected = true
-        marqueeRepeatLimit = -1
-        setHorizontallyScrolling(true)
-        isFocusable = true
-        setTextColor(color)
-        if (bold) setTypeface(null, android.graphics.Typeface.BOLD)
-    }
-
-    private fun emptyMessage(message: String) = TextView(this).apply {
-        text = message; textSize = 14f; setTextColor(COLOR_MUTED); setPadding(dp(4), dp(10), dp(4), dp(10))
-    }
-
     override fun onDestroy() {
         destroyed = true
         downloadService?.setListener(null)
@@ -5000,11 +4963,6 @@ class MainActivity :
         playbackService?.setListener(null)
         if (playbackBound) unbindService(playbackConnection)
         super.onDestroy()
-    }
-
-    private fun formatTime(milliseconds: Long): String {
-        val seconds = (milliseconds.coerceAtLeast(0) / 1000)
-        return "%d:%02d".format(seconds / 60, seconds % 60)
     }
 
     private fun String.normalizedForDuplicate(): String =
@@ -5036,13 +4994,6 @@ class MainActivity :
             override fun getDropDownView(position: Int, convertView: View?, parent: android.view.ViewGroup): View =
                 styleItem(super.getDropDownView(position, convertView, parent))
         }.also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
-
-    private fun sectionCard() = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        background = roundedBackground(COLOR_CARD, dp(16))
-        setPadding(dp(14), dp(12), dp(14), dp(12))
-        elevation = dp(2).toFloat()
-    }
 
     private fun animateSuccess(view: View) = view.animateStateChange()
 
