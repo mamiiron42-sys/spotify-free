@@ -70,26 +70,21 @@ import java.security.MessageDigest
 
 // AudioTrack is defined in AudioTrack.kt (shared with TrackRepository)
 
-/**
- * Everything the search tab needs to render, derived from `SearchViewModel` in one pass.
- */
-private data class SearchScreen(
-    val rows: List<SearchRow>,
-    val isSearching: Boolean,
-    val showTitle: Boolean,
-    /**
-     * True while the search stream still has unrevealed results, so the list can offer an
-     * explicit "Load more" row as a fallback to scroll-driven paging.
-     */
-    val hasMoreResults: Boolean,
-)
-
 /** The search stream's paging and error state, combined once so [combine] stays within its arity. */
-private data class SearchScreenState(
+internal data class SearchScreenState(
     val isSearching: Boolean,
     val isLoadingMore: Boolean,
     val hasMoreResults: Boolean,
     val error: String?,
+)
+
+/** Everything the search tab needs to render, derived from `SearchViewModel` in one pass. */
+internal data class SearchScreen(
+    val rows: List<SearchRow>,
+    val isSearching: Boolean,
+    val showTitle: Boolean,
+    /** True while the search stream still has unrevealed results. */
+    val hasMoreResults: Boolean,
 )
 
 /**
@@ -135,15 +130,10 @@ class MainActivity :
     private val playerViewModel: PlayerViewModel by viewModels()
 
     private lateinit var content: FrameLayout
-    private lateinit var searchInput: EditText
     private lateinit var searchButton: Button
-    private lateinit var searchResults: RecyclerView
-    private val searchAdapter = SearchResultAdapter(this)
     private val jobAdapter = DownloadJobAdapter(this)
     private val libraryAdapter = LibraryAdapter(this)
     private val playlistAdapter = PlaylistAdapter(this)
-    private lateinit var searchResultsTitle: TextView
-    private lateinit var searchScrollView: ScrollView
     private var pendingExportPlaylistId: Long? = null
     private lateinit var homeCategories: LinearLayout
     private lateinit var homeSubcategories: LinearLayout
@@ -783,12 +773,6 @@ class MainActivity :
         animateHomeContent()
     }
 
-    private fun clearOnlineSearch() {
-        searchInput.text.clear()
-        searchViewModel.clearSearch()
-        if (::searchResultsTitle.isInitialized) searchResultsTitle.visibility = View.GONE
-    }
-
     private fun updateHomeCategoryStyles() {
         for (index in 0 until homeCategories.childCount) {
             val chip = homeCategories.getChildAt(index) as TextView
@@ -865,7 +849,7 @@ class MainActivity :
                     updateHomeCategoryStyles()
                     if (homeCategory == HOME_CATEGORY_DISCOVER) {
                         showTab(R.string.nav_search)
-                        searchInput.setText(getString(label))
+                        searchSection.search(getString(label))
                         searchMusic(getString(label))
                     } else {
                         showHomeCollection()
@@ -1300,7 +1284,7 @@ class MainActivity :
                         homeSubcategory = index
                         updateHomeCategoryStyles()
                         showTab(R.string.nav_search)
-                        searchInput.setText(getString(label))
+                        searchSection.search(getString(label))
                         searchMusic(getString(label))
                     }
                 }, matchWidth().apply { bottomMargin = dp(8) })
@@ -1691,89 +1675,9 @@ class MainActivity :
 
 
     private fun buildSearchScreen(scroll: ScrollView) {
-        searchScrollView = scroll
-        val root = scrollContent(scroll)
-        root.addView(sectionTitle(getString(R.string.nav_search)).apply {
-            textSize = 30f
-            setPadding(0, 0, 0, dp(14))
-        }, matchWidth())
-        searchInput = EditText(this).apply {
-            hint = getString(R.string.search_hint_spotify)
-            isSingleLine = true
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            imeOptions = EditorInfo.IME_ACTION_SEARCH
-            textSize = 15f
-            setTextColor(COLOR_TEXT)
-            setHintTextColor(COLOR_MUTED)
-            setPadding(dp(8), 0, dp(10), 0)
-            background = null
-            setOnEditorActionListener { _, actionId, _ ->
-                if (actionId == EditorInfo.IME_ACTION_SEARCH) {
-                    searchMusic(); true
-                } else false
-            }
-        }
-        val searchBox = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = roundedBackground(COLOR_SURFACE, dp(24))
-            setPadding(dp(6), dp(4), dp(6), dp(4))
-        }
-        val searchIcon = iconView(R.drawable.ic_search_outline, 22, COLOR_MUTED).apply {
-            setPadding(dp(8), 0, 0, 0)
-        }
-        searchBox.addView(searchIcon, LinearLayout.LayoutParams(WRAP, MATCH))
-        searchBox.addView(searchInput, LinearLayout.LayoutParams(0, dp(48), 1f))
-        val clearSearchButton = iconButton(
-            iconRes = R.drawable.ic_close,
-            description = getString(R.string.clear_search),
-            tint = COLOR_MUTED,
-            sizeDp = 44,
-        ) { clearOnlineSearch() }
-        clearSearchButton.visibility = View.GONE
-        searchBox.addView(clearSearchButton, LinearLayout.LayoutParams(dp(44), dp(44)))
-        // No search-as-you-type: each keystroke would start a fresh yt-dlp extraction, which
-        // is what made search crawl and returned matches for queries nobody finished typing.
-        // Searching is an explicit action - Enter key or the Search button.
-        searchInput.addTextChangedListener(object : android.text.TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                clearSearchButton.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
-            }
-
-            override fun afterTextChanged(s: android.text.Editable?) {}
-        })
-        root.addView(searchBox, matchWidth())
-        searchButton = Button(this).apply {
-            text = getString(R.string.search_music)
-            styleActionButton(this, true)
-            setOnClickListener { searchMusic() }
-        }
-        root.addView(searchButton, matchWidth().apply {
-            topMargin = dp(10)
-            bottomMargin = dp(2)
-        })
-
-        searchResultsTitle = sectionTitle(getString(R.string.search_results)).apply {
-            visibility = View.GONE
-        }
-        root.addView(searchResultsTitle, sectionSpacing())
-        searchResults = RecyclerView(this).apply {
-            adapter = searchAdapter
-            layoutManager = GridLayoutManager(this@MainActivity, searchGridColumnCount()).apply {
-                spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
-                    override fun getSpanSize(position: Int): Int =
-                        searchAdapter.spanSizeFor(position, spanCount)
-                }
-            }
-            // Lives inside a ScrollView, which owns scrolling and drives pagination.
-            isNestedScrollingEnabled = false
-            itemAnimator = DefaultItemAnimator()
-            searchAdapter.cellWidthPx = searchCellWidthPx()
-        }
-        root.addView(searchResults, matchWidth())
-        scroll.setOnScrollChangeListener { _, _, _, _, _ -> maybeLoadMoreSearchResults() }
+        searchSection.attachTo(scroll)
     }
+
 
     private fun buildDiscoveryHero(): View = FrameLayout(this).apply {
         val compact = resources.configuration.screenWidthDp < 380
@@ -1856,6 +1760,47 @@ class MainActivity :
     private val playbackQueueSection by lazy {
         PlaybackQueueSection(this, playbackQueueHost)
     }
+
+    /**
+     * The search screen is owned by [SearchSection]; this is everything it needs. The activity
+     * keeps the ViewModel and the tab switching, the section keeps the field, the list, and
+     * the paging bookkeeping.
+     */
+    private val searchHost: SearchSection.Host = object : SearchSection.Host {
+        override fun search(query: String) = searchMusic(query)
+
+        override fun clearSearch() {
+            searchSection.clear()
+            searchViewModel.clearSearch()
+        }
+
+        override fun isSearching() = searchViewModel.isSearching.value
+
+        override fun loadNextPage(): Boolean {
+            searchViewModel.loadNextPage()
+            return true
+        }
+
+        override fun hasMoreResults() = searchViewModel.hasMoreResults.value
+        override fun isLoadingMore() = searchViewModel.isLoadingMore.value
+        override fun hasActiveQuery() = searchViewModel.searchQuery.value.isNotEmpty()
+
+        override fun showResultMenu(result: MusicSearchResult, anchor: View) {
+            showSearchResultMenu(result, anchor)
+        }
+
+        override fun downloadResult(result: MusicSearchResult) {
+            onSearchResultDownload(result)
+        }
+
+        override fun resumeDownload(jobId: Long) {
+            downloadService?.resumeJob(jobId)
+        }
+
+        override fun retryPage() = onSearchRetryPage()
+    }
+
+    private val searchSection by lazy { SearchSection(this, searchHost) }
 
 
     private fun buildQueueScreen(scroll: ScrollView) {
@@ -2979,7 +2924,7 @@ class MainActivity :
     }
 
     private fun searchMusic(queryOverride: String? = null) {
-        val query = (queryOverride ?: searchInput.text.toString()).trim()
+        val query = (queryOverride ?: searchSection.currentQuery()).trim()
         showTab(R.string.nav_search)
         // The query is never written back into the field: trimming used to rewrite the
         // EditText on every keystroke, which deleted the space the user had just typed and
@@ -3048,40 +2993,14 @@ class MainActivity :
     }
 
     private fun renderSearch(screen: SearchScreen) {
-        searchAdapter.cellWidthPx = searchCellWidthPx()
-        searchAdapter.submitList(screen.rows) {
-            // A completed page changes the ScrollView's content height but does not itself
-            // produce a scroll callback. Re-check after RecyclerView has committed and laid out
-            // the appended rows, so paging can continue whenever the viewport is still near end.
-            if (screen.hasMoreResults) searchResults.post { maybeLoadMoreSearchResults() }
-        }
-        searchResultsTitle.visibility = if (screen.showTitle) View.VISIBLE else View.GONE
-        val resultCount = screen.rows.count { it is SearchRow.Result }
-        searchResultsTitle.text = if (resultCount > 0) {
-            getString(R.string.search_results_count, resultCount)
-        } else {
-            getString(R.string.search_results)
-        }
-        searchButton.isEnabled = !screen.isSearching
-        searchButton.alpha = if (screen.isSearching) 0.65f else 1f
+        searchSection.render(screen)
     }
+
 
     private fun maybeLoadMoreSearchResults() {
-        if (!::searchScrollView.isInitialized ||
-            searchViewModel.searchQuery.value.isEmpty() ||
-            !searchViewModel.hasMoreResults.value ||
-            searchViewModel.isLoadingMore.value ||
-            searchViewModel.isSearching.value
-        ) return
-
-        val contentHeight = searchScrollView.getChildAt(0)?.height ?: return
-        // Start fetching about two screens early so results are ready before the user reaches
-        // the end, like YouTube's endless feed.
-        val prefetchDistance = maxOf(dp(600), searchScrollView.height * 2)
-        if (searchScrollView.scrollY + searchScrollView.height >= contentHeight - prefetchDistance) {
-            searchViewModel.loadNextPage()
-        }
+        searchSection.maybeLoadMoreSearchResults()
     }
+
 
     private fun enqueueUrls(urls: List<String>, showStatus: Boolean = true) {
         val validUrls = urls.distinctBy { it.lowercase() }
