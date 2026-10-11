@@ -333,7 +333,7 @@ class SearchViewModel @Inject constructor(
     }
     
     private companion object {
-        const val SEARCH_PAGE_SIZE = 30
+        const val SEARCH_PAGE_SIZE = 20
     }
 }
 

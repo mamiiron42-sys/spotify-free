@@ -144,6 +144,16 @@ class DownloadService : Service() {
             networkCallbackRegistered = false
         }
         scheduleNetworkPolicyEvaluation()
+        // Starting the interpreter and building yt-dlp's extractor registry takes about a
+        // second. Paying it here, off the interactive path, keeps the first search fast.
+        searchExecutor.execute {
+            try {
+                ensurePythonStarted()
+                Python.getInstance().getModule("downloader").callAttr("warm_up")
+            } catch (_: Exception) {
+                // A failed warm-up only costs the user's first search some time.
+            }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -220,6 +230,14 @@ class DownloadService : Service() {
         limit: Int,
         callback: (Result<List<MusicSearchResult>>) -> Unit,
     ) {
+        val cacheKey = "$query|$offset|$limit"
+        cachedSearchPage(cacheKey)?.let { cached ->
+            // A repeated query, or a page the user scrolled back to, costs nothing.
+            Handler(Looper.getMainLooper()).post {
+                callback(Result.success(decodeCachedResults(cached)))
+            }
+            return
+        }
         searchExecutor.execute {
             try {
                 ensurePythonStarted()
@@ -247,12 +265,48 @@ class DownloadService : Service() {
                         )
                     }
                 }
+                cacheSearchResult(cacheKey, resultJson)
                 Handler(Looper.getMainLooper()).post { callback(Result.success(results)) }
             } catch (error: Exception) {
                 Handler(Looper.getMainLooper()).post { callback(Result.failure(error)) }
             }
         }
     }
+
+    /**
+     * Recently served search pages, newest first. Re-searching a query or scrolling back
+     * over results the user already saw is then free instead of another yt-dlp round trip.
+     */
+    private val searchResultCache = object : LinkedHashMap<String, String>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean =
+            size > SEARCH_CACHE_SIZE
+    }
+
+    /** Synchronized because the read happens on the caller's thread and the write on the executor. */
+    @Synchronized
+    private fun cachedSearchPage(key: String): String? = searchResultCache[key]
+
+    @Synchronized
+    private fun cacheSearchResult(key: String, json: String) {
+        if (json.length in 1 until SEARCH_CACHE_MAX_ENTRY_CHARS) searchResultCache[key] = json
+    }
+
+    @Synchronized
+    private fun decodeCachedResults(json: String): List<MusicSearchResult> =
+        org.json.JSONArray(json).let { array ->
+            (0 until array.length()).mapNotNull { index ->
+                val item = array.optJSONObject(index) ?: return@mapNotNull null
+                val url = item.optString("url")
+                if (!url.startsWith("https://")) return@mapNotNull null
+                MusicSearchResult(
+                    title = item.optString("title"),
+                    url = url,
+                    uploader = item.optString("uploader"),
+                    durationSeconds = if (item.isNull("duration")) null else item.optDouble("duration").toInt(),
+                    thumbnailUrl = trustedThumbnailUrl(item.optString("thumbnail").takeIf(String::isNotBlank)),
+                )
+            }
+        }
 
     fun cancelJob(id: Long) {
         val control = synchronized(queueLock) {
@@ -1274,6 +1328,9 @@ class DownloadService : Service() {
         const val ACTION_ENQUEUE = "io.github.ytdlpandroid.action.ENQUEUE"
         private const val FORMAT_AUDIO_MP3 = "audio_mp3"
         private const val COPY_BUFFER_SIZE = 64 * 1024
+        private const val SEARCH_CACHE_SIZE = 48
+        private const val SEARCH_CACHE_MAX_ENTRY_CHARS = 128 * 1024
+
         const val ACTION_RESUME_QUEUE = "io.github.ytdlpandroid.action.RESUME_QUEUE"
         const val ACTION_PAUSE_CURRENT = "io.github.ytdlpandroid.action.PAUSE_CURRENT"
         const val ACTION_RESUME_CURRENT = "io.github.ytdlpandroid.action.RESUME_CURRENT"

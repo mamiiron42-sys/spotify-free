@@ -434,3 +434,20 @@ def download_urls(urls_json, output_dir, job_id, format_mode, allow_playlist, ca
             raise RuntimeError(f"yt-dlp could not download any URLs ({error_count} error(s))")
         raise RuntimeError("yt-dlp finished without producing files")
     return json.dumps({"files": safe_paths, "errors": int(error_count or 0), "tracks": tracks}, allow_nan=False)
+
+
+
+def warm_up():
+    """Builds the extractor registry so the first search does not pay for it.
+
+    yt-dlp builds its extractor classes lazily, on the first real extraction. Doing that
+    up front, on a background thread when the service starts, takes roughly a second off
+    the user's first search and adds nothing to the interactive path.
+    """
+    try:
+        # Constructing an instance is the supported way to force that lazy build.
+        ydl = YoutubeDL({"quiet": True, "no_warnings": True, "skip_download": True})
+        ydl.close()
+        return "ok"
+    except Exception as error:  # noqa: BLE001 - a warm-up must never break startup
+        return f"warm-up skipped: {error}"
