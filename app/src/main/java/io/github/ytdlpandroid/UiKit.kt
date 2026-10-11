@@ -10,6 +10,9 @@ import android.view.animation.OvershootInterpolator
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.GridLayout
+import android.widget.FrameLayout
+import android.graphics.Bitmap
 import android.text.TextUtils
 import android.widget.ArrayAdapter
 import android.widget.TextView
@@ -117,6 +120,64 @@ internal fun likedSongsGradient(radiusPx: Float = 0f) = GradientDrawable(
         isFocusable = true
         setTextColor(color)
         if (bold) setTypeface(null, android.graphics.Typeface.BOLD)
+    }
+
+    fun Context.artworkView(track: AudioTrack, size: Int): ImageView = ImageView(this).apply {
+        scaleType = ImageView.ScaleType.CENTER_CROP
+        background = roundedBackground(COLOR_SURFACE, dp(8))
+        contentDescription = getString(
+            R.string.track_artwork_description,
+            track.title,
+            track.artist,
+        )
+        val bitmap = track.artwork
+        if (bitmap != null) setImageBitmap(bitmap)
+        else {
+            setImageResource(android.R.drawable.ic_media_play)
+            loadTrustedThumbnail(track.thumbnailUrl)
+        }
+    }
+
+    fun Context.playlistCoverView(tracks: List<AudioTrack>, size: Int): View {
+        val withArt = tracks.filter { it.artwork != null || it.thumbnailUrl != null }
+            .distinctBy { it.artwork?.generationId ?: it.thumbnailUrl }
+        val frame = FrameLayout(this).apply {
+            background = roundedBackground(COLOR_SURFACE, dp(6))
+            clipToOutline = true
+            elevation = dp(10).toFloat()
+        }
+        when {
+            withArt.size >= 4 -> {
+                val half = size / 2
+                val grid = GridLayout(this).apply { columnCount = 2; rowCount = 2 }
+                withArt.take(4).forEach { track ->
+                    grid.addView(artworkView(track, half).apply { background = null }, GridLayout.LayoutParams().apply {
+                        width = half
+                        height = half
+                    })
+                }
+                frame.addView(grid, FrameLayout.LayoutParams(MATCH, MATCH))
+            }
+            withArt.isNotEmpty() -> frame.addView(
+                artworkView(withArt.first(), size).apply { background = null },
+                FrameLayout.LayoutParams(MATCH, MATCH),
+            )
+            else -> frame.addView(
+                iconView(R.drawable.ic_note, 56, COLOR_MUTED),
+                FrameLayout.LayoutParams(MATCH, MATCH),
+            )
+        }
+        return frame
+    }
+
+    fun Context.playlistTintColor(tracks: List<AudioTrack>): Int {
+        val bitmap = tracks.firstNotNullOfOrNull { it.artwork } ?: return COLOR_HERO_START
+        val average = runCatching {
+            Bitmap.createScaledBitmap(bitmap, 1, 1, true).getPixel(0, 0)
+        }.getOrNull() ?: return COLOR_HERO_START
+        fun mix(channel: (Int) -> Int) =
+            (channel(average) * 0.6f + channel(COLOR_BACKGROUND) * 0.4f).toInt()
+        return Color.rgb(mix(Color::red), mix(Color::green), mix(Color::blue))
     }
 
 internal fun animationsEnabled(): Boolean = ValueAnimator.areAnimatorsEnabled()
