@@ -131,37 +131,6 @@ class LibraryViewModel @Inject constructor(
         emit(trackRepository.loadArtwork(track.uri))
     }.flowOn(Dispatchers.IO)
 
-    /**
-     * Attempts to add a locally-imported audio URI to the library.
-     *
-     * TrackRepository does not currently expose a persistent-import API; this
-     * method stubs the persistence step and immediately triggers a full refresh
-     * so the new track (if readable from MediaStore) appears in the library.
-     *
-     * TODO(MainActivity integration): persist the URI via SharedPreferences /
-     * ContentResolver.takePersistableUriPermission before calling refreshLibrary(),
-     * matching the importResult() logic in MainActivity.  Move that logic into
-     * TrackRepository when the repository layer is extended.
-     */
-    fun importLocalAudio(uri: Uri) {
-        viewModelScope.launch {
-            _libraryError.value = null
-            try {
-                // Verify the URI is resolvable before refreshing
-                val metadata = trackRepository.extractMetadata(uri)
-                if (metadata == null) {
-                    _libraryError.value = "Could not read audio metadata from the selected file."
-                    return@launch
-                }
-                // TrackRepository reads from MediaStore; a full refresh picks up
-                // any newly-indexed file.  Direct-URI import persistence is a TODO
-                // (see KDoc above).
-                refreshLibrary()
-            } catch (e: Exception) {
-                _libraryError.value = "Failed to import audio: ${e.message}"
-            }
-        }
-    }
 
     /**
      * Reloads all tracks from [TrackRepository] and re-applies the current

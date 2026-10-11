@@ -92,6 +92,13 @@ class PlaybackService : Service() {
     private var lastSleepMinutes: Int? = null
     private var message: String? = null
     @Volatile private var snapshot = emptySnapshot()
+    private val playbackPrefs by lazy {
+        applicationContext.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+    }
+    private var restoringPersistedState = false
+    private var pendingResumeIndex = -1
+    private var pendingResumePlaying = false
+    private var resumePositionMs: Int? = null
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -131,6 +138,7 @@ class PlaybackService : Service() {
         super.onCreate()
         createNotificationChannel()
         createMediaSession()
+        restorePersistedState()
         publishSnapshot()
     }
 
@@ -147,6 +155,7 @@ class PlaybackService : Service() {
             ACTION_NEXT -> playNext()
             else -> {
                 ensureForeground()
+                resumePersistedState()
                 publishSnapshot()
             }
         }
@@ -154,6 +163,7 @@ class PlaybackService : Service() {
     }
 
     override fun onDestroy() {
+        persistPlaybackState()
         mainHandler.removeCallbacks(ticker)
         cancelSleepTimer()
         historyExecutor.shutdown()
@@ -192,6 +202,55 @@ class PlaybackService : Service() {
             message = null
             resumeOnFocusGain = false
             startTrack(currentIndex)
+        }
+    }
+
+    fun getQueue(): List<PlaybackTrack> = queue.toList()
+
+    fun playQueueIndex(index: Int) {
+        dispatchToMain {
+            if (index !in queue.indices) {
+                message = "That track is no longer in the queue."
+                publishSnapshot()
+                return@dispatchToMain
+            }
+            startService(Intent(this, PlaybackService::class.java).setAction(ACTION_START))
+            ensureForeground()
+            message = null
+            resumeOnFocusGain = false
+            startTrack(index)
+        }
+    }
+
+    fun removeFromQueue(index: Int): Boolean {
+        if (index !in queue.indices) return false
+        dispatchToMain { removeFromQueueOnMain(index) }
+        return true
+    }
+
+    fun moveQueueItem(fromIndex: Int, toIndex: Int): Boolean {
+        if (fromIndex == toIndex) return false
+        if (fromIndex !in queue.indices || toIndex !in queue.indices) return false
+        dispatchToMain { moveQueueItemOnMain(fromIndex, toIndex) }
+        return true
+    }
+
+    fun clearUpcoming() {
+        dispatchToMain {
+            if (currentIndex !in queue.indices) {
+                message = "No track is selected."
+                publishSnapshot()
+                return@dispatchToMain
+            }
+            if (currentIndex >= queue.lastIndex) {
+                message = "There is nothing queued after the current track."
+                publishSnapshot()
+                return@dispatchToMain
+            }
+            queue = queue.take(currentIndex + 1)
+            message = null
+            persistPlaybackState()
+            publishSnapshot()
         }
     }
 
@@ -246,6 +305,7 @@ class PlaybackService : Service() {
         dispatchToMain {
             shuffled = enabled
             message = null
+            persistPlaybackState()
             publishSnapshot()
         }
     }
@@ -258,6 +318,7 @@ class PlaybackService : Service() {
                 repeat = mode
                 message = null
             }
+            persistPlaybackState()
             publishSnapshot()
         }
     }
@@ -272,6 +333,7 @@ class PlaybackService : Service() {
             playbackSpeed = speed.coerceIn(MIN_SPEED, MAX_SPEED)
             message = null
             if (prepared && player != null) applyPlaybackSpeed()
+            persistPlaybackState()
             publishSnapshot()
         }
     }
@@ -369,7 +431,7 @@ class PlaybackService : Service() {
         session.isActive = true
     }
 
-    private fun startTrack(index: Int) {
+    private fun startTrack(index: Int, autoStart: Boolean = true) {
         if (index !in queue.indices) {
             message = "No playable track is selected."
             publishSnapshot()
@@ -381,6 +443,9 @@ class PlaybackService : Service() {
         prepared = false
         playing = false
         message = null
+        pendingResumeIndex = -1
+        pendingResumePlaying = false
+        persistPlaybackState(positionMs = 0)
         val track = queue[index]
         val parsedUri = runCatching { Uri.parse(track.uri) }.getOrNull()
         if (track.uri.isBlank() || parsedUri?.scheme.isNullOrBlank()) {
@@ -405,7 +470,17 @@ class PlaybackService : Service() {
                 updateMediaMetadata()
                 initializeEqualizerIfRequested()
                 applyPlaybackSpeed()
-                requestAudioFocusAndPlay()
+                val pendingSeek = resumePositionMs
+                resumePositionMs = null
+                if (pendingSeek != null && pendingSeek > 0) {
+                    runCatching { preparedPlayer.seekTo(pendingSeek) }
+                }
+                if (autoStart) {
+                    requestAudioFocusAndPlay()
+                } else {
+                    playing = false
+                    updatePlaybackState()
+                }
                 publishSnapshot()
             }
             mediaPlayer.setOnCompletionListener { completed ->
@@ -443,6 +518,7 @@ class PlaybackService : Service() {
                 try {
                     activePlayer.seekTo(0)
                     startPlayer()
+                    persistPlaybackState(positionMs = 0)
                 } catch (error: Exception) {
                     handlePlaybackFailure("Unable to repeat track", error)
                 }
@@ -473,11 +549,89 @@ class PlaybackService : Service() {
             abandonAudioFocus()
             message = if (manual) "End of queue." else "Playback finished."
             stopForegroundCompat()
+            persistPlaybackState(positionMs = 0)
             publishSnapshot()
             stopSelf()
             return
         }
         startTrack(next)
+    }
+
+    /**
+     * Removes [index] from the queue. Runs on the main thread, like every other queue mutation.
+     * When the removed entry is the current track, playback continues on the following stored entry
+     * (or a random one while shuffled, or index 0 with [REPEAT_ALL]) and stops coherently when the
+     * queue runs out. An emptied queue releases the player instead of crashing.
+     */
+    private fun removeFromQueueOnMain(index: Int) {
+        if (index !in queue.indices) return
+        val removingCurrent = index == currentIndex
+        val updated = queue.toMutableList().also { it.removeAt(index) }
+        if (updated.isEmpty()) {
+            queue = emptyList()
+            currentIndex = -1
+            releasePlayer()
+            stopTicker()
+            abandonAudioFocus()
+            message = "The queue is empty."
+            stopForegroundCompat()
+            persistPlaybackState()
+            publishSnapshot()
+            return
+        }
+        queue = updated
+        if (!removingCurrent) {
+            if (index < currentIndex) currentIndex -= 1
+            currentIndex = currentIndex.coerceIn(0, updated.lastIndex)
+            persistPlaybackState()
+            publishSnapshot()
+            return
+        }
+        val wasPlaying = playing
+        val next = when {
+            shuffled && updated.size > 1 -> Random.nextInt(updated.size)
+            index < updated.size -> index
+            repeat == REPEAT_ALL -> 0
+            else -> -1
+        }
+        if (next < 0) {
+            currentIndex = updated.lastIndex
+            releasePlayer()
+            stopTicker()
+            abandonAudioFocus()
+            message = "End of queue."
+            stopForegroundCompat()
+            persistPlaybackState()
+            publishSnapshot()
+            return
+        }
+        currentIndex = next
+        message = null
+        resumeOnFocusGain = false
+        startTrack(next, autoStart = wasPlaying)
+    }
+
+    /**
+     * Moves the entry at [fromIndex] to [toIndex] in stored order, dragging [currentIndex] along
+     * when the moved entry is the one that is playing.
+     */
+    private fun moveQueueItemOnMain(fromIndex: Int, toIndex: Int) {
+        if (fromIndex == toIndex) return
+        if (fromIndex !in queue.indices || toIndex !in queue.indices) return
+        val updated = queue.toMutableList()
+        val moved = updated.removeAt(fromIndex)
+        updated.add(toIndex, moved)
+        queue = updated
+        currentIndex = when (currentIndex) {
+            fromIndex -> toIndex
+            else -> {
+                var shifted = if (fromIndex < currentIndex) currentIndex - 1 else currentIndex
+                if (shifted >= toIndex) shifted += 1
+                shifted
+            }
+        }.coerceIn(0, updated.lastIndex)
+        persistPlaybackState()
+        publishSnapshot()
     }
 
     private fun requestAudioFocusAndPlay() {
@@ -574,6 +728,7 @@ class PlaybackService : Service() {
             resumeOnFocusGain = false
             abandonAudioFocus()
         }
+        persistPlaybackState()
         publishSnapshot()
     }
 
@@ -878,6 +1033,88 @@ class PlaybackService : Service() {
         if (Looper.myLooper() == Looper.getMainLooper()) block() else mainHandler.post(block)
     }
 
+    /**
+     * Writes queue, index, position, shuffle, repeat and speed to SharedPreferences.
+     * Never runs while a restore is in progress, and never from the position ticker.
+     */
+    private fun persistPlaybackState(positionMs: Int = safePosition()) {
+        if (restoringPersistedState) return
+        val position = positionMs.coerceAtLeast(0)
+        playbackPrefs.edit()
+            .putString(KEY_QUEUE_URIS, queue.joinToString(QUEUE_URI_SEPARATOR) { it.uri })
+            .putInt(KEY_QUEUE_SIZE, queue.size)
+            .putInt(KEY_CURRENT_INDEX, currentIndex)
+            .putInt(KEY_POSITION_MS, position)
+            .putBoolean(KEY_SHUFFLE, shuffled)
+            .putInt(KEY_REPEAT_MODE, repeat)
+            .putFloat(KEY_PLAYBACK_SPEED, playbackSpeed)
+            .putBoolean(KEY_WAS_PLAYING, playing)
+            .apply()
+    }
+
+    /**
+     * Rebuilds the queue, index, position, shuffle, repeat and speed after a service restart or
+     * process death. A launch with no persisted queue stays empty, so [onStartCommand] keeps its
+     * "no queue -> stop" behaviour. Playback itself is left to [resumePersumedState], which
+     * prepares the restored track once and seeks to the persisted position.
+     */
+    private fun restorePersistedState() {
+        restoringPersistedState = true
+        try {
+            if (!playbackPrefs.contains(KEY_QUEUE_SIZE)) return
+            val persistedSize = playbackPrefs.getInt(KEY_QUEUE_SIZE, 0)
+            val persistedUris = playbackPrefs.getString(KEY_QUEUE_URIS, null)
+                ?.split(QUEUE_URI_SEPARATOR)
+                ?.filter { it.isNotBlank() }
+                ?: return
+            val persistedIndex = playbackPrefs.getInt(KEY_CURRENT_INDEX, -1)
+            if (persistedSize <= 0 || persistedSize != persistedUris.size) return
+            if (persistedIndex !in persistedUris.indices) {
+                playbackPrefs.edit().remove(KEY_QUEUE_URIS).remove(KEY_QUEUE_SIZE).apply()
+                return
+            }
+            queue = persistedUris.map { uri ->
+                PlaybackTrack(
+                    uri = uri,
+                    title = uri.substringAfterLast('/').ifBlank { uri },
+                    artist = "",
+                    album = "",
+                    durationMs = 0L,
+                    artwork = null,
+                )
+            }
+            currentIndex = persistedIndex
+            shuffled = playbackPrefs.getBoolean(KEY_SHUFFLE, false)
+            repeat = playbackPrefs.getInt(KEY_REPEAT_MODE, REPEAT_OFF).coerceIn(REPEAT_OFF, REPEAT_ONE)
+            playbackSpeed = playbackPrefs.getFloat(KEY_PLAYBACK_SPEED, 1f).coerceIn(MIN_SPEED, MAX_SPEED)
+            resumePositionMs = playbackPrefs.getInt(KEY_POSITION_MS, 0)
+                .coerceIn(0, Int.MAX_VALUE).takeIf { it > 0 }
+            pendingResumeIndex = persistedIndex
+            pendingResumePlaying = playbackPrefs.getBoolean(KEY_WAS_PLAYING, false)
+            message = null
+        } finally {
+            restoringPersistedState = false
+        }
+    }
+
+    /**
+     * Prepares the restored track once, seeking to the persisted position. Playback only starts
+     * when the service was playing before it was destroyed; otherwise the player stays paused at
+     * the restored position.
+     */
+    private fun resumePersistedState() {
+        if (pendingResumeIndex !in queue.indices) {
+            pendingResumeIndex = -1
+            pendingResumePlaying = false
+            return
+        }
+        val index = pendingResumeIndex
+        val autoStart = pendingResumePlaying
+        pendingResumeIndex = -1
+        pendingResumePlaying = false
+        startTrack(index, autoStart = autoStart)
+    }
+
     private fun randomIndexExcept(excluded: Int): Int {
         if (queue.size <= 1) return currentIndex.coerceAtLeast(0)
         var choice: Int
@@ -913,6 +1150,16 @@ class PlaybackService : Service() {
         private const val MAX_SLEEP_MINUTES = 240
         private const val MIN_SPEED = 0.5f
         private const val MAX_SPEED = 2f
+        private const val PREFS_NAME = "playback_state"
+        private const val QUEUE_URI_SEPARATOR = "\n"
+        private const val KEY_QUEUE_URIS = "queue_uris"
+        private const val KEY_QUEUE_SIZE = "queue_size"
+        private const val KEY_CURRENT_INDEX = "current_index"
+        private const val KEY_POSITION_MS = "position_ms"
+        private const val KEY_SHUFFLE = "shuffle"
+        private const val KEY_REPEAT_MODE = "repeat_mode"
+        private const val KEY_PLAYBACK_SPEED = "playback_speed"
+        private const val KEY_WAS_PLAYING = "was_playing"
 
         private fun emptySnapshot() = PlaybackSnapshot(
             track = null,

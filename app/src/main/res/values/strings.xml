@@ -118,6 +118,8 @@
     <string name="move_track_up">Move track up</string>
     <string name="move_track_down">Move track down</string>
     <string name="share_playlist">Share playlist as M3U text</string>
+    <string name="export_playlist_m3u">Export to M3U file</string>
+    <string name="playlist_export_failed">Could not export the playlist.</string>
     <string name="import_playlist_m3u">Import M3U playlist</string>
     <string name="playlist_file_too_large">Playlist file is larger than 1 MB.</string>
     <string name="playlist_import_failed">Could not import this playlist.</string>
@@ -311,4 +313,13 @@
     <string name="now_playing_download_queued">Downloading %1$s</string>
     <string name="now_playing_search_failed">Could not find %1$s</string>
     <string name="now_playing_source_other">Played elsewhere</string>
+    <string name="playback_queue_title">Queue</string>
+    <string name="playback_queue_empty">Nothing queued. Play a playlist to fill the queue.</string>
+    <string name="remove_from_queue">Remove %1$s from the queue</string>
+    <string name="clear_upcoming">Clear upcoming tracks</string>
+    <string name="playback_queue_move_failed">Could not reorder the queue.</string>
+    <string name="playback_queue_remove_failed">Could not remove that track.</string>
+    <string name="removed_from_queue">Removed from queue</string>
+    <string name="removed_from_playlist">Removed from playlist</string>
+    <string name="undo">Undo</string>
 </resources>

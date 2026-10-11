@@ -5,11 +5,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.github.ytdlpandroid.SavedPlaylist
+import io.github.ytdlpandroid.repository.M3UExportOutcome
+import io.github.ytdlpandroid.repository.M3UImportOutcome
 import io.github.ytdlpandroid.repository.PlaylistRepository
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 /**
@@ -24,6 +29,9 @@ class PlaylistViewModel @Inject constructor(
     companion object {
         /** Canonical name used to identify the Liked Songs playlist. */
         const val LIKED_SONGS_NAME = "Liked Songs"
+
+        private const val IMPORT_FAILED_MESSAGE = "Could not import this playlist."
+        private const val EXPORT_FAILED_MESSAGE = "Could not export this playlist."
     }
 
     // --- Playlist list ---
@@ -48,6 +56,9 @@ class PlaylistViewModel @Inject constructor(
 
     private val _playlistError = MutableStateFlow<String?>(null)
     val playlistError: StateFlow<String?> = _playlistError.asStateFlow()
+
+    private val _playlistMessage = MutableStateFlow<String?>(null)
+    val playlistMessage: StateFlow<String?> = _playlistMessage.asStateFlow()
 
     init {
         refreshPlaylists()
@@ -214,21 +225,6 @@ class PlaylistViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Moves the track at [fromIndex] to [toIndex] within [playlist] and refreshes the list.
-     */
-    fun reorderTrack(playlist: SavedPlaylist, fromIndex: Int, toIndex: Int) {
-        if (fromIndex == toIndex) return
-        viewModelScope.launch {
-            _playlistError.value = null
-            try {
-                playlistRepository.moveTrack(playlist.id, fromIndex, toIndex)
-                refreshPlaylists()
-            } catch (e: Exception) {
-                _playlistError.value = e.message ?: "Failed to reorder track"
-            }
-        }
-    }
 
     // ---------------------------------------------------------------------------
     // Toggle like
@@ -264,40 +260,99 @@ class PlaylistViewModel @Inject constructor(
     // ---------------------------------------------------------------------------
 
     /**
-     * Imports a playlist from an M3U file at [uri].
+     * Imports a playlist from the M3U file at [uri].
      *
-     * TODO: Implement once PlaylistRepository exposes M3U import support.
-     *       Currently, M3U parsing lives in MainActivity.importPlaylistM3u() and relies on
-     *       ContentResolver access that requires AndroidViewModel or a use-case layer.
+     * The document is read on [Dispatchers.IO] by [PlaylistRepository.importM3U],
+     * which resolves every entry against the local library, skips entries it
+     * cannot resolve, and adds the rest to a playlist named after the file
+     * (created on a first import, reused afterwards). Successful imports publish
+     * a summary on [playlistMessage] and refresh the playlist list; failures are
+     * mapped onto [playlistError]. Coroutine cancellation propagates; no other
+     * exception escapes this function.
      */
-    fun importM3U(uri: Uri) {
-        // TODO: parse the M3U file via ContentResolver, resolve tracks, and call
-        //       playlistRepository.createPlaylist() + playlistRepository.addTrack() for each entry.
-        _playlistError.value = "M3U import not yet implemented in the ViewModel layer"
+    suspend fun importM3U(uri: Uri) {
+        withContext(Dispatchers.IO) {
+            _playlistError.value = null
+            _playlistMessage.value = null
+            val outcome = try {
+                playlistRepository.importM3U(uri)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                M3UImportOutcome.Failed(error.message ?: IMPORT_FAILED_MESSAGE)
+            }
+            when (outcome) {
+                is M3UImportOutcome.Imported -> {
+                    _playlistMessage.value = importSummary(outcome)
+                    refreshPlaylists()
+                }
+
+                is M3UImportOutcome.Failed -> _playlistError.value = outcome.message
+            }
+        }
     }
 
     /**
-     * Exports [playlist] as an M3U file to [uri].
+     * Exports [playlist] to the M3U file at [uri].
      *
-     * TODO: Implement once PlaylistRepository exposes M3U export support or a use-case is added.
-     *       Export requires resolving track metadata (ContentResolver / file path) and writing to
-     *       a Uri via ContentResolver.openOutputStream(), which needs an Application context
-     *       (AndroidViewModel) or a dedicated IO use-case.
+     * The playlist is re-read from the store and written on [Dispatchers.IO] by
+     * [PlaylistRepository.exportM3U] as `#EXTM3U` plus one
+     * `#EXTINF:<duration>,<artist> - <title>` line and one path line per track.
+     * Success publishes a summary on [playlistMessage]; failures are mapped onto
+     * [playlistError]. Coroutine cancellation propagates; no other exception
+     * escapes this function.
      */
-    fun exportM3U(playlist: SavedPlaylist, uri: Uri) {
-        // TODO: resolve each playlist.tracks entry to a file path via PlaylistRepository
-        //       .getTrackMetadata(), build "#EXTM3U\n#EXTINF:..." lines, and write to the Uri.
-        _playlistError.value = "M3U export not yet implemented in the ViewModel layer"
+    suspend fun exportM3U(playlist: SavedPlaylist, uri: Uri) {
+        withContext(Dispatchers.IO) {
+            _playlistError.value = null
+            _playlistMessage.value = null
+            val outcome = try {
+                playlistRepository.exportM3U(playlist, uri)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                M3UExportOutcome.Failed(error.message ?: EXPORT_FAILED_MESSAGE)
+            }
+            when (outcome) {
+                is M3UExportOutcome.Exported -> {
+                    _playlistMessage.value =
+                        "Exported ${outcome.trackCount} track(s) from ${outcome.playlistName}"
+                }
+
+                is M3UExportOutcome.Failed -> _playlistError.value = outcome.message
+            }
+        }
     }
 
     // ---------------------------------------------------------------------------
     // Utility
     // ---------------------------------------------------------------------------
 
+    /** Summary shown after a successful import, including any skipped entries. */
+    private fun importSummary(outcome: M3UImportOutcome.Imported): String = buildString {
+        append("Imported ")
+        append(outcome.addedTracks)
+        append(if (outcome.addedTracks == 1) " track into " else " tracks into ")
+        append(outcome.playlistName)
+        if (outcome.skippedEntries > 0) {
+            append(" (")
+            append(outcome.skippedEntries)
+            append(if (outcome.skippedEntries == 1) " entry" else " entries")
+            append(" skipped)")
+        }
+    }
+
     /**
      * Clears the current error message.
      */
     fun clearError() {
         _playlistError.value = null
+    }
+
+    /**
+     * Clears the current message.
+     */
+    fun clearMessage() {
+        _playlistMessage.value = null
     }
 }

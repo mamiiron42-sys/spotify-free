@@ -69,11 +69,6 @@ import java.security.MessageDigest
 
 // AudioTrack is defined in AudioTrack.kt (shared with TrackRepository)
 
-data class PlaylistImportItem(
-    val uri: String,
-    val metadata: SavedTrackMetadata? = null,
-)
-
 /**
  * Everything the search tab needs to render, derived from `SearchViewModel` in one pass.
  */
@@ -148,6 +143,7 @@ class MainActivity :
     private val playlistAdapter = PlaylistAdapter(this)
     private lateinit var searchResultsTitle: TextView
     private lateinit var searchScrollView: ScrollView
+    private var pendingExportPlaylistId: Long? = null
     private lateinit var homeCategories: LinearLayout
     private lateinit var homeSubcategories: LinearLayout
     private lateinit var homeLibraryContent: LinearLayout
@@ -168,6 +164,10 @@ class MainActivity :
     private lateinit var queueEmpty: TextView
     private lateinit var libraryList: RecyclerView
     private lateinit var downloadHistoryList: GridLayout
+    private lateinit var playbackQueueList: LinearLayout
+    private var snackbarView: LinearLayout? = null
+    private var renderedQueueSignature: String? = null
+    private var snackbarHideHandle: Runnable? = null
     private lateinit var libraryRecentHistory: GridLayout
     private lateinit var librarySortButton: ImageView
     private lateinit var libraryTrackHeading: TextView
@@ -185,6 +185,17 @@ class MainActivity :
     private var selectedPlaylistId: Long? = null
     /** Tab to return to when the playlist page is closed (e.g. Home when opened from a Home card). */
     private var playlistReturnTab: Int? = null
+    /**
+     * Back from the full-screen player returns to the tab the user came from. Without this,
+     * Back exits the app from a surface the user navigated into.
+     */
+    private val playerBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() {
+            showTab(previousTabBeforePlayer)
+            isEnabled = false
+        }
+    }
+
     private val playlistDetailBackCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
             closePlaylistDetail()
@@ -300,7 +311,21 @@ class MainActivity :
             if (destroyed) return
             runOnUiThread {
                 if (!destroyed) renderPlaybackSnapshot(snapshot)
+                refreshQueueIfChanged()
             }
+        }
+
+        /**
+         * Rebuilds the queue list only when the queue or the current track changed. The
+         * snapshot fires every second with a position update, and re-rendering on each one
+         * would reset scroll position and fight the user's reorder taps.
+         */
+        private fun refreshQueueIfChanged() {
+            if (!::playbackQueueList.isInitialized || destroyed) return
+            val signature = playbackQueueSignature()
+            if (signature == renderedQueueSignature) return
+            renderedQueueSignature = signature
+            renderPlaybackQueue()
         }
 
         override fun onPlaybackHistoryChanged() {
@@ -321,6 +346,7 @@ class MainActivity :
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         onBackPressedDispatcher.addCallback(this, playlistDetailBackCallback)
+        onBackPressedDispatcher.addCallback(this, playerBackCallback)
         window.statusBarColor = COLOR_BACKGROUND
         window.navigationBarColor = COLOR_BACKGROUND
         window.decorView.systemUiVisibility = 0
@@ -330,6 +356,7 @@ class MainActivity :
         observeDownloads()
         observeLibrary()
         observePlaylists()
+        observePlaylistMessages()
         bound = bindService(Intent(this, DownloadService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
         playbackBound =
             bindService(Intent(this, PlaybackService::class.java), playbackConnection, Context.BIND_AUTO_CREATE)
@@ -362,6 +389,9 @@ class MainActivity :
 
     override fun onResume() {
         super.onResume()
+        // A full-screen player is a pushed destination: Back should leave it, not the app.
+        playerBackCallback.isEnabled = currentTab == R.string.nav_player &&
+            previousTabBeforePlayer != R.string.nav_player
         // Access may have been granted (or revoked) while the app was in the background; the
         // listener itself is rebound by the system, we only need the UI to catch up.
         if (::nowPlayingContent.isInitialized) renderNowPlayingContent()
@@ -471,19 +501,8 @@ class MainActivity :
             marginEnd = dp(10)
         })
         val nowPlayingLabels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        nowPlayingTitle = TextView(this).apply {
-            textSize = 13f
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(COLOR_TEXT)
-        }
-        nowPlayingArtist = TextView(this).apply {
-            textSize = 11f
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setTextColor(COLOR_MUTED)
-        }
+        nowPlayingTitle = marqueeLabel(sizeSp = 13f, bold = true)
+        nowPlayingArtist = marqueeLabel(sizeSp = 11f, color = COLOR_MUTED)
         nowPlayingLabels.addView(nowPlayingTitle)
         nowPlayingLabels.addView(nowPlayingArtist)
         nowPlayingContent.addView(nowPlayingLabels, LinearLayout.LayoutParams(0, WRAP, 1f))
@@ -1814,8 +1833,154 @@ class MainActivity :
         }, FrameLayout.LayoutParams(artworkSize, artworkSize, Gravity.END or Gravity.CENTER_VERTICAL))
     }
 
+    /**
+     * Playback queue: what is playing now and what is next, with reorder and remove.
+     * This is the queue Spotify exposes from the player; the download jobs below it are a
+     * separate concern and used to be the only thing on this screen.
+     */
+    private fun buildPlaybackQueueSection(root: LinearLayout) {
+        playbackQueueList = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(sectionTitle(getString(R.string.playback_queue_title)), matchWidth())
+            addView(playbackQueueList, matchWidth())
+        }
+        root.addView(container, matchWidth().apply { bottomMargin = dp(8) })
+        renderPlaybackQueue()
+    }
+
+    private fun playbackQueueSignature(): String? {
+        val service = playbackService ?: return null
+        val uris = service.getQueue().map { it.uri }
+        if (uris.isEmpty()) return ""
+        return uris.joinToString("\u0000") + "\u0000#" + (playbackSnapshot?.index ?: -1)
+    }
+
+    private fun renderPlaybackQueue() {
+        if (!::playbackQueueList.isInitialized) return
+        playbackQueueList.removeAllViews()
+        val snapshot = playbackSnapshot
+        val queue = playbackService?.getQueue().orEmpty()
+        if (queue.isEmpty()) {
+            playbackQueueList.addView(emptyMessage(getString(R.string.playback_queue_empty)), matchWidth())
+            return
+        }
+        queue.forEachIndexed { index, track ->
+            val isCurrent = index == snapshot?.index
+            val audioTrack = AudioTrack(
+                uri = android.net.Uri.parse(track.uri),
+                title = track.title,
+                artist = track.artist,
+                album = track.album,
+                durationMs = track.durationMs,
+                artwork = null,
+                dateAdded = 0L,
+            )
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                if (isCurrent) {
+                    background = roundedBackground(COLOR_CARD, dp(8))
+                }
+                setPadding(dp(8), dp(6), dp(8), dp(6))
+                isClickable = true
+                isFocusable = true
+                contentDescription = track.title
+                setOnClickListener { playbackService?.playQueueIndex(index) }
+            }
+            val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            labels.addView(TextView(this).apply {
+                text = if (isCurrent) track.title else track.title
+                textSize = 14f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTypeface(null, android.graphics.Typeface.BOLD)
+                setTextColor(if (isCurrent) COLOR_ACCENT else COLOR_TEXT)
+            })
+            labels.addView(TextView(this).apply {
+                text = track.artist.ifBlank { formatTime(track.durationMs.toLong()) }
+                textSize = 12f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(COLOR_MUTED)
+            })
+            row.addView(labels, LinearLayout.LayoutParams(0, WRAP, 1f).apply { marginStart = dp(4) })
+
+            if (index > 0) {
+                row.addView(
+                    iconButton(
+                        iconRes = R.drawable.ic_chevron_down,
+                        description = getString(R.string.move_up),
+                        tint = COLOR_MUTED,
+                        sizeDp = 44,
+                        insetDp = 11,
+                    ) { reorderQueueItem(index, index - 1) },
+                    LinearLayout.LayoutParams(dp(44), dp(44)),
+                )
+            }
+            if (index < queue.lastIndex) {
+                val moveDown = iconButton(
+                    iconRes = R.drawable.ic_chevron_down,
+                    description = getString(R.string.move_down),
+                    tint = COLOR_MUTED,
+                    sizeDp = 44,
+                    insetDp = 11,
+                ) { reorderQueueItem(index, index + 1) }
+                // Same chevron, flipped so it points down.
+                moveDown.rotation = 180f
+                row.addView(moveDown, LinearLayout.LayoutParams(dp(44), dp(44)))
+            }
+            row.addView(
+                iconButton(
+                    iconRes = R.drawable.ic_close,
+                    description = getString(R.string.remove_from_queue, track.title),
+                    tint = COLOR_MUTED,
+                    sizeDp = 44,
+                    insetDp = 11,
+                ) { removeQueueItem(index, track.title) },
+                LinearLayout.LayoutParams(dp(44), dp(44)),
+            )
+            playbackQueueList.addView(row, matchWidth())
+        }
+        playbackQueueList.addView(
+            Button(this).apply {
+                text = getString(R.string.clear_upcoming)
+                styleActionButton(this, false)
+                setOnClickListener {
+                    playbackService?.clearUpcoming()
+                    renderPlaybackQueue()
+                }
+            },
+            matchWidth().apply { topMargin = dp(10) },
+        )
+        // Keep the signature in step with what was just drawn, so the snapshot a mutation
+        // publishes does not immediately re-render and reset scroll position.
+        renderedQueueSignature = playbackQueueSignature()
+    }
+
+    private fun reorderQueueItem(fromIndex: Int, toIndex: Int) {
+        val service = playbackService ?: return
+        if (!service.moveQueueItem(fromIndex, toIndex)) {
+            showError(getString(R.string.playback_queue_move_failed))
+            return
+        }
+        renderPlaybackQueue()
+    }
+
+    private fun removeQueueItem(index: Int, title: String) {
+        val service = playbackService ?: return
+        val removed = service.removeFromQueue(index)
+        renderPlaybackQueue()
+        if (!removed) {
+            showError(getString(R.string.playback_queue_remove_failed))
+            return
+        }
+        showSnackbar(getString(R.string.removed_from_queue))
+    }
+
     private fun buildQueueScreen(scroll: ScrollView) {
         val root = scrollContent(scroll)
+        buildPlaybackQueueSection(root)
         root.addView(sectionTitle(getString(R.string.queue_recent_jobs)))
         val settingsPanel = sectionCard()
         settingsPanel.addView(TextView(this).apply {
@@ -2822,20 +2987,8 @@ class MainActivity :
             gravity = Gravity.CENTER_VERTICAL
         }
         val trackLabels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        playerTitle = TextView(this).apply {
-            text = getString(R.string.nothing_playing)
-            textSize = 23f
-            maxLines = 2
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setTypeface(null, android.graphics.Typeface.BOLD)
-            setTextColor(COLOR_TEXT)
-        }
-        playerArtist = TextView(this).apply {
-            textSize = 15f
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setTextColor(COLOR_MUTED)
-        }
+        playerTitle = marqueeLabel(sizeSp = 23f, bold = true)
+        playerArtist = marqueeLabel(sizeSp = 15f, color = COLOR_MUTED)
         trackLabels.addView(playerTitle)
         trackLabels.addView(playerArtist)
         trackRow.addView(trackLabels, LinearLayout.LayoutParams(0, WRAP, 1f))
@@ -4065,6 +4218,18 @@ class MainActivity :
         playlistViewModel.refreshPlaylists()
     }
 
+    /** Surfaces playlist import/export outcomes that used to be silent. */
+    private fun observePlaylistMessages() {
+        lifecycleScope.launch {
+            playlistViewModel.playlistMessage.collect { message ->
+                if (!destroyed && !message.isNullOrBlank()) {
+                    Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
+                    playlistViewModel.clearMessage()
+                }
+            }
+        }
+    }
+
     private fun observePlaylists() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -4141,6 +4306,7 @@ class MainActivity :
             menu.add(0, 0, 0, R.string.play)
             menu.add(0, 1, 1, R.string.add_tracks)
             menu.add(0, 2, 2, R.string.share_playlist)
+            menu.add(0, 5, 2, R.string.export_playlist_m3u)
             // Liked Songs is found by name, so renaming it would orphan the like button.
             if (!playlist.name.equals(getString(R.string.liked_songs), ignoreCase = true)) {
                 menu.add(0, 4, 3, R.string.rename_playlist)
@@ -4151,6 +4317,7 @@ class MainActivity :
                     0 -> loadPlaylistAndPlay(playlist.id)
                     1 -> chooseTracksForPlaylist(playlist.id)
                     2 -> sharePlaylistM3u(playlist)
+                    5 -> exportPlaylistM3u(playlist)
                     3 -> confirmDeletePlaylist(playlist.id, playlist.name)
                     4 -> promptRenamePlaylist(playlist)
                 }
@@ -4700,6 +4867,20 @@ class MainActivity :
         }
     }
 
+    /** Writes the playlist to an M3U file the user picks. */
+    private fun exportPlaylistM3u(playlist: SavedPlaylist) {
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "audio/x-mpegurl"
+            putExtra(Intent.EXTRA_TITLE, "${sanitizeFileName(playlist.name)}.m3u")
+        }
+        startActivityForResult(intent, REQUEST_EXPORT_M3U)
+        pendingExportPlaylistId = playlist.id
+    }
+
+    private fun sanitizeFileName(name: String): String =
+        name.trim().replace(Regex("[^\\p{L}\\p{N} _-]"), "_").ifBlank { "playlist" }
+
     private fun sharePlaylistM3u(playlist: SavedPlaylist) {
         val entries = playlist.tracks.mapNotNull { raw ->
             val track = resolvePlaylistTrack(raw) ?: return@mapNotNull null
@@ -4725,109 +4906,15 @@ class MainActivity :
         }
     }
 
+    /**
+     * Imports an M3U file. Delegates to the repository so entries resolve by URI, file name,
+     * base name, or EXTINF title; the old inline parser only matched lines that were exactly
+     * a stored URI, so a normal playlist of file paths imported nothing.
+     */
     private fun importPlaylistM3u(uri: Uri) {
-        lifecycleScope.launch(Dispatchers.IO) {
-            val result = try {
-                val text = contentResolver.openInputStream(uri)?.use { input ->
-                    val output = ByteArrayOutputStream()
-                    val buffer = ByteArray(8192)
-                    var total = 0
-                    while (total <= MAX_M3U_BYTES) {
-                        val count = input.read(buffer, 0, minOf(buffer.size, MAX_M3U_BYTES + 1 - total))
-                        if (count < 0) break
-                        output.write(buffer, 0, count)
-                        total += count
-                    }
-                    check(total <= MAX_M3U_BYTES) { getString(R.string.playlist_file_too_large) }
-                    output.toString(Charsets.UTF_8.name())
-                } ?: error(getString(R.string.playlist_import_failed))
-                val available = libraryViewModel.tracks.value.associateBy { it.uri.toString() }
-                val matches = linkedMapOf<String, PlaylistImportItem>()
-                var pendingTitle: String? = null
-                var pendingDurationMs: Long? = null
-                text.lineSequence().map(String::trim).forEach { line ->
-                    when {
-                        line.startsWith("#EXTINF:", ignoreCase = true) -> {
-                            val details = line.substringAfter(':')
-                            val durationSeconds = details.substringBefore(',').toLongOrNull()
-                            pendingDurationMs = durationSeconds?.takeIf { it >= 0 }?.times(1000L)
-                            pendingTitle = details.substringAfter(',', "").trim().takeIf(String::isNotEmpty)
-                        }
-
-                        line.isEmpty() || line.startsWith("#") -> Unit
-                        available.containsKey(line) -> {
-                            matches.putIfAbsent(line, PlaylistImportItem(line))
-                            pendingTitle = null
-                            pendingDurationMs = null
-                        }
-
-                        else -> {
-                            val remoteUri = Uri.parse(line)
-                            if (remoteUri.scheme in setOf("http", "https") && !remoteUri.host.isNullOrBlank()) {
-                                val displayTitle = pendingTitle.orEmpty()
-                                val separator = displayTitle.indexOf(" - ")
-                                val artist = if (separator > 0) displayTitle.substring(0, separator) else ""
-                                val title = if (separator > 0) displayTitle.substring(separator + 3) else displayTitle
-                                val metadata = SavedTrackMetadata(
-                                    uri = line,
-                                    title = title.ifBlank { remoteUri.lastPathSegment ?: line },
-                                    artist = artist,
-                                    album = "",
-                                    durationMs = pendingDurationMs,
-                                    artworkPath = null,
-                                )
-                                matches.putIfAbsent(line, PlaylistImportItem(line, metadata))
-                            }
-                            pendingTitle = null
-                            pendingDurationMs = null
-                        }
-                    }
-                }
-                if (matches.isEmpty()) error(getString(R.string.playlist_no_matching_tracks))
-                Result.success(matches.values.toList())
-            } catch (error: Exception) {
-                Result.failure(error)
-            }
-            runOnUiThread {
-                if (destroyed) return@runOnUiThread
-                result.fold(
-                    onSuccess = { tracks ->
-                        val input = EditText(this@MainActivity).apply { hint = getString(R.string.playlist_name) }
-                        AlertDialog.Builder(this@MainActivity)
-                            .setTitle(getString(R.string.playlist_import_name))
-                            .setView(input)
-                            .setNegativeButton(android.R.string.cancel, null)
-                            .setPositiveButton(R.string.create) { _, _ ->
-                                val name = input.text.toString().trim()
-                                try {
-                                    require(name.isNotEmpty()) { getString(R.string.playlist_name_required) }
-                                    val id = playlists.createPlaylist(name)
-                                    tracks.forEach { track ->
-                                        track.metadata?.let { metadata ->
-                                            playlists.saveTrackMetadata(
-                                                trackUri = track.uri,
-                                                title = metadata.title,
-                                                artist = metadata.artist,
-                                                album = metadata.album,
-                                                durationMs = metadata.durationMs,
-                                                artworkPath = metadata.artworkPath,
-                                            )
-                                        }
-                                    }
-                                    check(playlists.addTracks(id, tracks.map { it.uri }) == tracks.size) {
-                                        getString(R.string.playlist_track_failed)
-                                    }
-                                    refreshPlaylists()
-                                } catch (error: Exception) {
-                                    showError(error.localizedMessage ?: getString(R.string.playlist_import_failed))
-                                }
-                            }.show()
-                    },
-                    onFailure = { error ->
-                        showError(error.localizedMessage ?: getString(R.string.playlist_import_failed))
-                    },
-                )
-            }
+        lifecycleScope.launch {
+            playlistViewModel.importM3U(uri)
+            refreshPlaylists()
         }
     }
 
@@ -4856,8 +4943,30 @@ class MainActivity :
     }
 
     private fun removeFromPlaylist(id: Long, uri: String) {
+        val playlist = runCatching { playlists.getPlaylists().firstOrNull { it.id == id } }.getOrNull()
+        val originalIndex = playlist?.tracks?.indexOf(uri) ?: -1
         try {
-            playlists.removeTrack(id, uri); refreshPlaylists()
+            val removed = playlists.removeTrack(id, uri)
+            if (!removed) {
+                showError(getString(R.string.playlist_track_failed))
+                return
+            }
+            refreshPlaylists()
+            // Reversible: the store keeps an explicit position, so undo restores it in place.
+            showSnackbar(getString(R.string.removed_from_playlist), getString(R.string.undo)) {
+                lifecycleScope.launch(Dispatchers.IO) {
+                    try {
+                        playlists.addTracks(id, listOf(uri))
+                        if (originalIndex >= 0) {
+                            val last = playlists.getPlaylists().first { it.id == id }.tracks.lastIndex
+                            playlists.moveTrack(id, last, originalIndex)
+                        }
+                    } catch (error: Exception) {
+                        android.util.Log.e("MainActivity", "Undo failed", error)
+                    }
+                    runOnUiThread { if (!destroyed) refreshPlaylists() }
+                }
+            }
         } catch (error: Exception) {
             showError(error.localizedMessage ?: getString(R.string.playlist_track_failed))
         }
@@ -5122,9 +5231,117 @@ class MainActivity :
         if (requestCode == REQUEST_IMPORT_M3U && resultCode == RESULT_OK) {
             data?.data?.let(::importPlaylistM3u)
         }
+        if (requestCode == REQUEST_EXPORT_M3U && resultCode == RESULT_OK) {
+            val target = data?.data
+            val playlistId = pendingExportPlaylistId
+            if (target != null && playlistId != null) {
+                val playlist = playlists.getPlaylists().firstOrNull { it.id == playlistId }
+                if (playlist == null) {
+                    showError(getString(R.string.playlist_export_failed))
+                } else {
+                    lifecycleScope.launch { playlistViewModel.exportM3U(playlist, target) }
+                }
+            }
+            pendingExportPlaylistId = null
+        }
     }
 
     private fun showError(message: String) = Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+
+    /**
+     * Lightweight Snackbar equivalent.
+     *
+     * The app has no Material dependency and builds its UI programmatically, so this is a
+     * temporary bar with an optional action instead of a Toast: destructive actions like
+     * removing a track from a playlist become reversible with one tap.
+     */
+    private fun showSnackbar(
+        message: String,
+        actionLabel: String? = null,
+        action: (() -> Unit)? = null,
+    ) {
+        if (destroyed || !::content.isInitialized) return
+        snackbarHideHandle?.let(content::removeCallbacks)
+        val bar = snackbarView ?: LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = roundedBackground(COLOR_SURFACE, dp(8))
+            elevation = dp(8).toFloat()
+            setPadding(dp(16), dp(12), dp(8), dp(12))
+            visibility = View.INVISIBLE
+            layoutParams = FrameLayout.LayoutParams(MATCH, WRAP).apply {
+                gravity = Gravity.BOTTOM
+                marginStart = dp(12)
+                marginEnd = dp(12)
+                bottomMargin = dp(72)
+            }
+            content.addView(this)
+            snackbarView = this
+        }
+        bar.removeAllViews()
+        bar.visibility = View.VISIBLE
+        bar.addView(TextView(this).apply {
+            text = message
+            textSize = 13f
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setTextColor(COLOR_TEXT)
+        }, LinearLayout.LayoutParams(0, WRAP, 1f))
+        if (actionLabel != null && action != null) {
+            bar.addView(Button(this).apply {
+                text = actionLabel
+                textSize = 13f
+                isAllCaps = true
+                setTextColor(COLOR_ACCENT)
+                background = null
+                minHeight = dp(40)
+                setOnClickListener {
+                    snackbarHideHandle?.let(content::removeCallbacks)
+                    animateSnackbarOut()
+                    action()
+                }
+            }, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(8) })
+        }
+        val hide = Runnable { animateSnackbarOut() }
+        bar.post {
+            bar.animate().cancel()
+            bar.alpha = 0f
+            bar.translationY = dp(24).toFloat()
+            bar.animate().alpha(1f).translationY(0f).setDuration(220).start()
+        }
+        content.postDelayed(hide, SNACKBAR_DURATION_MS)
+        snackbarHideHandle = hide
+    }
+
+    private fun animateSnackbarOut() {
+        val bar = snackbarView ?: return
+        if (bar.visibility != View.VISIBLE) return
+        bar.animate().cancel()
+        bar.animate().alpha(0f).translationY(dp(24).toFloat()).setDuration(220)
+            .withEndAction { bar.visibility = View.INVISIBLE }
+            .start()
+    }
+
+    /**
+     * Single-line label that scrolls its text when it does not fit, like Spotify's now-
+     * playing rows. Selecting the view is what enables marquee on a TextView; the text must
+     * also be non-empty for it to start.
+     */
+    private fun marqueeLabel(
+        sizeSp: Float,
+        color: Int = COLOR_TEXT,
+        bold: Boolean = false,
+    ): TextView = TextView(this).apply {
+        textSize = sizeSp
+        maxLines = 1
+        ellipsize = android.text.TextUtils.TruncateAt.MARQUEE
+        isSelected = true
+        marqueeRepeatLimit = -1
+        setHorizontallyScrolling(true)
+        isFocusable = true
+        setTextColor(color)
+        if (bold) setTypeface(null, android.graphics.Typeface.BOLD)
+    }
 
     private fun emptyMessage(message: String) = TextView(this).apply {
         text = message; textSize = 14f; setTextColor(COLOR_MUTED); setPadding(dp(4), dp(10), dp(4), dp(10))
@@ -5204,11 +5421,12 @@ class MainActivity :
         private const val REQUEST_AUDIO_LIBRARY = 13
         private const val REQUEST_IMPORT_AUDIO = 11
         private const val REQUEST_IMPORT_M3U = 12
+        private const val REQUEST_EXPORT_M3U = 13
+        private const val SNACKBAR_DURATION_MS = 4500L
         private const val PREFERENCES = "downloader_preferences"
         private const val KEY_FORMAT = "format_mode"
         private const val KEY_IMPORTED = "imported_audio_uris"
         private const val MAX_TRACK_ART_PIXELS = 640
-        private const val MAX_M3U_BYTES = 1024 * 1024
         private const val MAX_CONCURRENT_DOWNLOADS = 10
         private const val MAX_CONTENT_WIDTH_DP = 760
         private const val LIBRARY_SECTION_SONGS = 0
