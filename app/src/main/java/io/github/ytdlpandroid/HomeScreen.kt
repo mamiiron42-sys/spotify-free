@@ -699,6 +699,10 @@ internal class HomeScreen(
             homeLibraryContent.addView(homeMusicGrid, matchWidth())
             return
         }
+        if (homeCategory == HOME_CATEGORY_MUSIC) {
+            renderMusicShelves()
+            return
+        }
         val libraryTracks = host.libraryViewModel.tracks.value
         if (libraryTracks.isEmpty()) {
             homeLibraryContent.addView(buildHomeEmptyState(), matchWidth())
@@ -709,13 +713,7 @@ internal class HomeScreen(
                 if (homeCategory == HOME_CATEGORY_ARTISTS) R.string.home_category_artists
                 else R.string.home_category_albums,
             )
-            val grouped = libraryTracks.groupBy {
-                if (homeCategory == HOME_CATEGORY_ARTISTS) {
-                    it.artist.ifBlank { context.getString(R.string.unknown_artist) }
-                } else {
-                    it.album.ifBlank { context.getString(R.string.unknown_album) }
-                }
-            }
+            val grouped = groupLibraryTracks(homeCategory == HOME_CATEGORY_ARTISTS, libraryTracks)
             val sortedGroups = when (homeSubcategory) {
                 1 -> grouped.entries.sortedWith(
                     compareByDescending<Map.Entry<String, List<AudioTrack>>> { it.value.size }
@@ -756,91 +754,184 @@ internal class HomeScreen(
             homeLibraryContent.addView(homeMusicGrid, matchWidth())
             return
         }
-
-        val ordered = when (homeSubcategory) {
-            1 -> libraryTracks.sortedByDescending { it.dateAdded }
-            2 -> libraryTracks.sortedByDescending { it.durationMs }
-            else -> libraryTracks
-        }
-        val tracks = if (homeSubcategory == 1) ordered.take(40) else ordered
-        val heading = context.getString(
-            when {
-                homeSubcategory == 1 -> R.string.home_recent_heading
-                homeSubcategory == 2 -> R.string.home_music_longest
-                else -> R.string.home_collection_heading
-            },
-        )
-        if (homeSubcategory == 0 && tracks.size >= 2) {
-            homeLibraryContent.addView(renderSpotifyQuickAccess(tracks), matchWidth().apply {
-                bottomMargin = context.dp(14)
-            })
-        }
-        homeLibraryContent.addView(
-            homeSectionHeading(
-                "$heading · ${context.getString(R.string.home_artist_count, tracks.size)}",
-                context.getString(R.string.play),
-                onAction = { if (tracks.isNotEmpty()) host.playTrackList(tracks, 0) },
-            ),
-            sectionSpacing(),
-        )
-        homeMusicGrid = newHomeMusicGrid()
-        tracks.forEachIndexed { index, track -> addHomeTrackCard(track, tracks, index) }
-        homeLibraryContent.addView(homeMusicGrid, matchWidth())
     }
 
-    private fun renderSpotifyQuickAccess(tracks: List<AudioTrack>): View {
-        val grid = GridLayout(context).apply {
-            columnCount = 2
-            alignmentMode = GridLayout.ALIGN_BOUNDS
-            useDefaultMargins = false
+    /** Groups the library by [byArtist] or by album, as the Artists/Albums categories do. */
+    private fun groupLibraryTracks(
+        byArtist: Boolean,
+        libraryTracks: List<AudioTrack>,
+    ): Map<String, List<AudioTrack>> = libraryTracks.groupBy {
+        if (byArtist) it.artist.ifBlank { context.getString(R.string.unknown_artist) }
+        else it.album.ifBlank { context.getString(R.string.unknown_album) }
+    }
+
+    /**
+     * The "All" category: Spotify-style shelves. Every section heading is followed by a
+     * horizontal row of fixed-width cards, so the shelves read top to bottom instead of one
+     * flat grid. A shelf whose source list is empty is skipped entirely, and a library with no
+     * history, playlists, or tracks keeps the home empty state.
+     */
+    private fun renderMusicShelves() {
+        val libraryTracks = host.libraryViewModel.tracks.value
+        val recentPreview = host.recentHistory()
+        val recentTracks = recentPreview.entries.map(host::recentHistoryTrack)
+        val recentCards = recentTracks.mapIndexed { index, track ->
+            trackShelfCard(track, recentTracks, index)
         }
-        val topItems = tracks.take(6)
-        val containerWidth = minOf(
-            context.dp(MAX_CONTENT_WIDTH_DP),
-            (context.windowWidthPx() - context.dp(24)).coerceAtLeast(0),
+        val savedPlaylists = try {
+            host.playlists.getPlaylists()
+        } catch (error: Exception) {
+            emptyList()
+        }
+        val playlistCards = savedPlaylists.map(::playlistShelfCard)
+        val artistCards = groupLibraryTracks(true, libraryTracks)
+            .entries
+            .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.key })
+            .map { (name, tracks) -> groupShelfCard(name, tracks, HOME_CATEGORY_ARTISTS) }
+        val albumCards = groupLibraryTracks(false, libraryTracks)
+            .entries
+            .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.key })
+            .map { (name, tracks) -> groupShelfCard(name, tracks, HOME_CATEGORY_ALBUMS) }
+        val recentlyAdded = libraryTracks
+            .sortedByDescending { it.dateAdded }
+            .take(SHELF_CARD_LIMIT)
+        val recentlyAddedCards = recentlyAdded.mapIndexed { index, track ->
+            trackShelfCard(track, recentlyAdded, index)
+        }
+        addShelf(context.getString(R.string.recent_history_title), recentCards)
+        addShelf(context.getString(R.string.playlists_title), playlistCards)
+        addShelf(context.getString(R.string.home_category_artists), artistCards)
+        addShelf(context.getString(R.string.home_category_albums), albumCards)
+        addShelf(context.getString(R.string.home_recent_heading), recentlyAddedCards)
+        if (recentCards.isEmpty() &&
+            playlistCards.isEmpty() &&
+            artistCards.isEmpty() &&
+            albumCards.isEmpty() &&
+            recentlyAddedCards.isEmpty()
+        ) {
+            homeLibraryContent.addView(buildHomeEmptyState(), matchWidth())
+        }
+    }
+
+    /** One card inside a home shelf: its artwork, both text lines, description, and click. */
+    private class ShelfCardSpec(
+        val artwork: View,
+        val title: String,
+        val subtitle: String,
+        val description: String,
+        val onClick: () -> Unit,
+    )
+
+    /** Builds a shelf: the bold heading above a horizontal row of [cards]. */
+    private fun addShelf(title: String, cards: List<ShelfCardSpec>) {
+        if (cards.isEmpty()) return
+        val shelf = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        shelf.addView(
+            context.sectionTitle(title),
+            matchWidth().apply { topMargin = context.dp(8) },
         )
-        val cardWidth = (containerWidth - context.dp(8)) / 2
-        topItems.forEachIndexed { index, track ->
-            val card = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                background = roundedBackground(COLOR_SURFACE, context.dp(6))
-                isClickable = true
-                isFocusable = true
-                contentDescription =
-                    context.getString(R.string.home_track_accessibility, track.title, track.artist)
-                setOnClickListener {
-                    animateSuccess(this)
-                    host.playTrackList(tracks, index)
-                }
-            }
-            card.addView(
-                context.artworkView(track, context.dp(56)).apply {
-                    (background as? GradientDrawable)?.cornerRadius = context.dp(6).toFloat()
-                },
-                LinearLayout.LayoutParams(context.dp(56), context.dp(56)),
-            )
-            val titleView = TextView(context).apply {
-                text = track.title
-                textSize = 12f
-                setTypeface(null, android.graphics.Typeface.BOLD)
-                setTextColor(COLOR_TEXT)
-                maxLines = 2
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                setPadding(context.dp(8), 0, context.dp(8), 0)
-            }
-            card.addView(titleView, LinearLayout.LayoutParams(0, WRAP, 1f))
-            val params = GridLayout.LayoutParams(
-                GridLayout.spec(index / 2),
-                GridLayout.spec(index % 2),
-            ).apply {
-                width = cardWidth
-                height = context.dp(56)
-                setMargins(context.dp(2), context.dp(3), context.dp(2), context.dp(3))
-            }
-            grid.addView(card, params)
+        val row = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        cards.forEach { card -> row.addView(buildShelfCard(card)) }
+        shelf.addView(HorizontalScrollView(context).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(row)
+        }, matchWidth())
+        homeLibraryContent.addView(shelf, sectionSpacing())
+    }
+
+    private fun buildShelfCard(card: ShelfCardSpec): View = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        isClickable = true
+        isFocusable = true
+        contentDescription = card.description
+        setOnClickListener {
+            animateSuccess(this)
+            card.onClick()
         }
-        return grid
+        layoutParams = LinearLayout.LayoutParams(context.dp(148), WRAP).apply {
+            marginEnd = context.dp(12)
+        }
+        addView(
+            card.artwork,
+            LinearLayout.LayoutParams(context.dp(148), context.dp(148)),
+        )
+        addView(TextView(context).apply {
+            text = card.title
+            textSize = 14f
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(COLOR_TEXT)
+            setPadding(context.dp(2), context.dp(8), context.dp(2), 0)
+        }, LinearLayout.LayoutParams(MATCH, WRAP))
+        addView(TextView(context).apply {
+            text = card.subtitle
+            textSize = 12f
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setTextColor(COLOR_MUTED)
+            setPadding(context.dp(2), context.dp(2), context.dp(2), 0)
+        }, LinearLayout.LayoutParams(MATCH, WRAP))
+    }
+
+    private fun trackShelfCard(
+        track: AudioTrack,
+        queue: List<AudioTrack>,
+        index: Int,
+    ): ShelfCardSpec = ShelfCardSpec(
+        artwork = context.artworkView(track, context.dp(148)).apply { clipToOutline = true },
+        title = track.title,
+        subtitle = track.artist,
+        description = context.getString(
+            R.string.home_track_accessibility,
+            track.title,
+            track.artist,
+        ),
+        onClick = { host.playTrackList(queue, index) },
+    )
+
+    private fun playlistShelfCard(playlist: SavedPlaylist): ShelfCardSpec {
+        val tracks = playlist.tracks.mapNotNull { uri -> host.resolvePlaylistTrack(uri) }
+        val count = context.getString(R.string.home_artist_count, playlist.tracks.size)
+        return ShelfCardSpec(
+            artwork = context.playlistCoverView(tracks, context.dp(148)),
+            title = playlist.name,
+            subtitle = count,
+            description = context.getString(
+                R.string.home_playlist_accessibility,
+                playlist.name,
+                count,
+            ),
+            onClick = { host.openPlaylist(playlist.id) },
+        )
+    }
+
+    private fun groupShelfCard(
+        name: String,
+        tracks: List<AudioTrack>,
+        category: Int,
+    ): ShelfCardSpec {
+        val count = context.getString(R.string.home_artist_count, tracks.size)
+        return ShelfCardSpec(
+            artwork = context.artworkView(tracks.first(), context.dp(148)).apply {
+                clipToOutline = true
+            },
+            title = name,
+            subtitle = count,
+            description = context.getString(R.string.home_group_accessibility, name, count),
+            onClick = { openHomeGroup(category, name) },
+        )
+    }
+
+    /** Opens the group's collection in its own category, as its group cards do. */
+    private fun openHomeGroup(category: Int, name: String) {
+        homeCategory = category
+        homeSubcategory = 0
+        selectedHomeGroup = name
+        renderHomeSubcategories()
+        updateHomeCategoryStyles()
+        showHomeCollection()
+        renderHomeLibrary()
     }
 
     private fun buildHomeEmptyState(): View = LinearLayout(context).apply {
@@ -893,22 +984,6 @@ internal class HomeScreen(
         columnCount = host.gridColumnCount()
         alignmentMode = GridLayout.ALIGN_BOUNDS
         useDefaultMargins = false
-    }
-
-    private fun homeSectionHeading(
-        title: String,
-        actionText: String,
-        onAction: () -> Unit,
-    ): View = LinearLayout(context).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        addView(context.sectionTitle(title), LinearLayout.LayoutParams(0, WRAP, 1f))
-        addView(Button(context).apply {
-            text = actionText
-            minWidth = context.dp(48)
-            context.styleActionButton(this, false)
-            setOnClickListener { onAction() }
-        }, LinearLayout.LayoutParams(WRAP, context.dp(48)))
     }
 
     private fun buildDiscoveryHero(): View = FrameLayout(context).apply {
@@ -1020,5 +1095,8 @@ internal class HomeScreen(
         const val HOME_CATEGORY_PLAYLISTS = 3
         const val HOME_CATEGORY_DISCOVER = 4
         const val HOME_CATEGORY_RECENT_PLAYED = 5
+
+        /** How many cards a home shelf shows at most, keeping rows reachable. */
+        const val SHELF_CARD_LIMIT = 12
     }
 }
