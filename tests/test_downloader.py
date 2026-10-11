@@ -235,11 +235,14 @@ class DownloaderTests(unittest.TestCase):
 
         results = json.loads(self.downloader.search_music("songs", FakeCallback()))
 
+        # The thumbnail is now derived from the video id, so the scraped entry data
+        # (including the untrusted "unsafe" host) never reaches the image loader at all.
         self.assertEqual([result["thumbnail"] for result in results], [
             "https://i.ytimg.com/vi/safe/hqdefault.jpg",
             "https://i.ytimg.com/vi/list/hqdefault.jpg",
-            None,
+            "https://i.ytimg.com/vi/unsafe/hqdefault.jpg",
         ])
+        self.assertTrue(all("evil.example" not in r["thumbnail"] for r in results))
 
     def test_search_results_return_requested_page(self):
         FAKE_STATE.search_info = {"entries": [

@@ -61,7 +61,6 @@ import io.github.ytdlpandroid.viewmodel.SearchDownloadState
 import io.github.ytdlpandroid.viewmodel.SearchViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -149,7 +148,6 @@ class MainActivity :
     private val playlistAdapter = PlaylistAdapter(this)
     private lateinit var searchResultsTitle: TextView
     private lateinit var searchScrollView: ScrollView
-    private var searchDebounceJob: kotlinx.coroutines.Job? = null
     private lateinit var homeCategories: LinearLayout
     private lateinit var homeSubcategories: LinearLayout
     private lateinit var homeLibraryContent: LinearLayout
@@ -217,7 +215,6 @@ class MainActivity :
     private lateinit var playerLikeButton: ImageView
     private lateinit var playerHeaderTitle: TextView
     private lateinit var playerHeaderSubtitle: TextView
-    private var searchBrowseSection: View? = null
     private var previousTabBeforePlayer = R.string.nav_home
     private var downloadService: DownloadService? = null
     private var playbackService: PlaybackService? = null
@@ -793,12 +790,8 @@ class MainActivity :
     }
 
     private fun clearOnlineSearch() {
-        // Drop any pending debounced search before clearing so it cannot fire afterwards.
-        searchDebounceJob?.cancel()
-        searchDebounceJob = null
         searchInput.text.clear()
         searchViewModel.clearSearch()
-        searchBrowseSection?.visibility = View.VISIBLE
         if (::searchResultsTitle.isInitialized) searchResultsTitle.visibility = View.GONE
     }
 
@@ -1671,70 +1664,6 @@ class MainActivity :
         renderHomeLibrary()
     }
 
-    private fun buildSearchBrowseAll(): View {
-        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        container.addView(sectionTitle(getString(R.string.search_browse_all)).apply {
-            textSize = 20f
-            setPadding(0, dp(14), 0, dp(8))
-        }, matchWidth())
-
-        val grid = GridLayout(this).apply {
-            columnCount = 2
-            alignmentMode = GridLayout.ALIGN_BOUNDS
-            useDefaultMargins = false
-        }
-        val genres = listOf(
-            Triple("Pop", Color.rgb(235, 30, 50), "♫"),
-            Triple("Hip-Hop", Color.rgb(186, 93, 7), "⚡"),
-            Triple("Rock", Color.rgb(233, 20, 41), "🎸"),
-            Triple("Chill", Color.rgb(45, 70, 185), "☕"),
-            Triple("Workout", Color.rgb(115, 88, 255), "🔥"),
-            Triple("Focus", Color.rgb(30, 50, 100), "🎧"),
-            Triple("Dance", Color.rgb(13, 115, 236), "🪩"),
-            Triple("Indie", Color.rgb(96, 129, 8), "🌿"),
-        )
-        val containerWidth = minOf(dp(MAX_CONTENT_WIDTH_DP), (windowWidthPx() - dp(24)).coerceAtLeast(0))
-        val cardWidth = (containerWidth - dp(10)) / 2
-        genres.forEachIndexed { index, (name, color, icon) ->
-            val card = FrameLayout(this).apply {
-                background = roundedBackground(color, dp(8))
-                isClickable = true
-                isFocusable = true
-                setOnClickListener {
-                    searchInput.setText(name)
-                    searchMusic(name)
-                }
-            }
-            val title = TextView(this).apply {
-                text = name
-                textSize = 16f
-                setTypeface(null, android.graphics.Typeface.BOLD)
-                setTextColor(Color.WHITE)
-                setPadding(dp(12), dp(12), dp(12), 0)
-            }
-            val iconView = TextView(this).apply {
-                text = icon
-                textSize = 24f
-                setTextColor(Color.argb(170, 255, 255, 255))
-            }
-            card.addView(title, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.START or Gravity.TOP))
-            card.addView(iconView, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.END or Gravity.BOTTOM).apply {
-                rightMargin = dp(10)
-                bottomMargin = dp(8)
-            })
-            val params = GridLayout.LayoutParams(
-                GridLayout.spec(index / 2),
-                GridLayout.spec(index % 2),
-            ).apply {
-                width = cardWidth
-                height = dp(84)
-                setMargins(dp(2), dp(3), dp(2), dp(4))
-            }
-            grid.addView(card, params)
-        }
-        container.addView(grid, matchWidth())
-        return container
-    }
 
     private fun buildSearchScreen(scroll: ScrollView) {
         searchScrollView = scroll
@@ -1778,24 +1707,13 @@ class MainActivity :
         ) { clearOnlineSearch() }
         clearSearchButton.visibility = View.GONE
         searchBox.addView(clearSearchButton, LinearLayout.LayoutParams(dp(44), dp(44)))
+        // No search-as-you-type: each keystroke would start a fresh yt-dlp extraction, which
+        // is what made search crawl and returned matches for queries nobody finished typing.
+        // Searching is an explicit action - Enter key or the Search button.
         searchInput.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                 clearSearchButton.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
-                searchBrowseSection?.visibility = if (s.isNullOrEmpty()) View.VISIBLE else View.GONE
-                // Search as you type, debounced. A single character is not a query yet, so
-                // short input waits for the Search button or the Enter key instead of firing
-                // a request per keystroke that only ever matches nothing.
-                searchDebounceJob?.cancel()
-                val typed = s?.toString().orEmpty()
-                searchDebounceJob = lifecycleScope.launch {
-                    delay(SEARCH_AUTO_DEBOUNCE_MS)
-                    when {
-                        typed.isBlank() -> searchViewModel.clearSearch()
-                        typed.trim().length >= MIN_AUTO_SEARCH_LENGTH -> searchMusic(typed)
-                        else -> Unit
-                    }
-                }
             }
 
             override fun afterTextChanged(s: android.text.Editable?) {}
@@ -1810,10 +1728,6 @@ class MainActivity :
             topMargin = dp(10)
             bottomMargin = dp(2)
         })
-
-        val browseSection = buildSearchBrowseAll()
-        searchBrowseSection = browseSection
-        root.addView(browseSection, matchWidth().apply { topMargin = dp(8) })
 
         searchResultsTitle = sectionTitle(getString(R.string.search_results)).apply {
             visibility = View.GONE
@@ -3190,7 +3104,6 @@ class MainActivity :
     private fun searchMusic(queryOverride: String? = null) {
         val query = (queryOverride ?: searchInput.text.toString()).trim()
         showTab(R.string.nav_search)
-        if (query.isNotEmpty()) searchBrowseSection?.visibility = View.GONE
         // The query is never written back into the field: trimming used to rewrite the
         // EditText on every keystroke, which deleted the space the user had just typed and
         // moved the caret, so multi-word queries could not be entered at all.
@@ -3272,7 +3185,6 @@ class MainActivity :
         } else {
             getString(R.string.search_results)
         }
-        searchBrowseSection?.visibility = if (screen.showTitle || searchInput.text.isNotEmpty()) View.GONE else View.VISIBLE
         searchButton.isEnabled = !screen.isSearching
         searchButton.alpha = if (screen.isSearching) 0.65f else 1f
     }
@@ -5299,8 +5211,6 @@ class MainActivity :
         private const val MAX_M3U_BYTES = 1024 * 1024
         private const val MAX_CONCURRENT_DOWNLOADS = 10
         private const val MAX_CONTENT_WIDTH_DP = 760
-        private const val SEARCH_AUTO_DEBOUNCE_MS = 350L
-        private const val MIN_AUTO_SEARCH_LENGTH = 2
         private const val LIBRARY_SECTION_SONGS = 0
         private const val LIBRARY_SECTION_PLAYLISTS = 1
         /** Group ids for the combined sort/group popup in the library header. */

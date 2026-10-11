@@ -89,6 +89,18 @@ def _safe_thumbnail_url(value):
     return value
 
 
+def _thumbnail_for_video(video_id):
+    """Thumbnail derived from the video id, which always exists for a public video.
+
+    Preferred over the scraped thumbnail list because that data is inconsistent between
+    the flat and full extraction paths, and those URLs carry query strings that the
+    image loader rejects. Same allowlisted host either way.
+    """
+    if isinstance(video_id, str) and video_id:
+        return f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+    return None
+
+
 def _thumbnail_from_info(info):
     thumbnail = _safe_thumbnail_url(info.get("thumbnail"))
     if thumbnail:
@@ -292,7 +304,8 @@ def search_music(query, callback, offset=0, limit=20):
             "url": webpage_url,
             "uploader": entry.get("uploader") or entry.get("channel") or "",
             "duration": _finite_number(entry.get("duration")),
-            "thumbnail": _thumbnail_from_info(entry),
+            "thumbnail": _safe_thumbnail_url(_thumbnail_for_video(entry["id"]))
+            or _thumbnail_from_info(entry),
         })
     return json.dumps(results, ensure_ascii=False, allow_nan=False)
 

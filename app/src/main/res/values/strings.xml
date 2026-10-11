@@ -277,7 +277,6 @@
     <string name="home_greeting_morning">Good morning</string>
     <string name="home_greeting_afternoon">Good afternoon</string>
     <string name="home_greeting_evening">Good evening</string>
-    <string name="search_browse_all">Browse all</string>
     <string name="search_hint_spotify">What do you want to listen to?</string>
     <string name="now_playing_from_playlist">PLAYING FROM PLAYLIST</string>
     <string name="now_playing_from_library">PLAYING FROM YOUR LIBRARY</string>
