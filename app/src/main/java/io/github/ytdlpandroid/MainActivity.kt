@@ -921,7 +921,8 @@ class MainActivity :
         override fun search(query: String) = searchMusic(query)
 
         override fun clearSearch() {
-            searchSection.clear()
+            // SearchSection.clear() already emptied the field before calling here. Calling back
+            // into it would recurse until the stack overflows, which is what the X button did.
             searchViewModel.clearSearch()
         }
 
