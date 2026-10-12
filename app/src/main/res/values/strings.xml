@@ -310,6 +310,7 @@
     <string name="now_playing_clear_failed">Could not clear captured history</string>
     <string name="now_playing_remove_failed">Could not remove this entry</string>
     <string name="now_playing_download">Download</string>
+    <string name="download_current_track">Download this track</string>
     <string name="now_playing_download_queued">Downloading %1$s</string>
     <string name="now_playing_search_failed">Could not find %1$s</string>
     <string name="now_playing_source_other">Played elsewhere</string>

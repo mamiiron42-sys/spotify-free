@@ -173,6 +173,7 @@ class MainActivity :
     private lateinit var nowPlayingLikeButton: ImageView
     private lateinit var nowPlayingProgress: ProgressBar
     private lateinit var playerLikeButton: ImageView
+    private lateinit var playerDownloadButton: ImageView
     private lateinit var playerHeaderTitle: TextView
     private lateinit var playerHeaderSubtitle: TextView
     private var previousTabBeforePlayer = R.string.nav_home
@@ -1514,6 +1515,19 @@ class MainActivity :
             }
         }
         trackRow.addView(playerLikeButton, LinearLayout.LayoutParams(dp(44), dp(44)))
+
+        // Download what is playing, without leaving the player. Only offered for library
+        // tracks; a local file is already on the device and there is nothing to download.
+        playerDownloadButton = iconButton(
+            iconRes = R.drawable.ic_download,
+            description = getString(R.string.download_current_track),
+            tint = COLOR_MUTED,
+            sizeDp = 44,
+        ) {
+            val track = currentPlaybackTrack ?: return@iconButton
+            enqueueUrls(listOf(track.uri.toString()), showStatus = false)
+        }
+        trackRow.addView(playerDownloadButton, LinearLayout.LayoutParams(dp(44), dp(44)))
         root.addView(trackRow, matchWidth())
 
         playerSeek = SeekBar(this).apply {
@@ -2645,6 +2659,12 @@ class MainActivity :
             )
             playerTitle.text = track.title
             playerArtist.text = "${track.artist} · ${track.album}"
+            if (::playerDownloadButton.isInitialized) {
+                // The snapshot carries the uri as a String, so parse before reading the scheme.
+                val scheme = Uri.parse(track.uri).scheme
+                val local = scheme != "http" && scheme != "https"
+                playerDownloadButton.visibility = if (local) View.GONE else View.VISIBLE
+            }
             playerArtwork.contentDescription = getString(
                 R.string.track_artwork_description,
                 track.title,
