@@ -323,4 +323,7 @@
     <string name="removed_from_queue">Removed from queue</string>
     <string name="removed_from_playlist">Removed from playlist</string>
     <string name="undo">Undo</string>
+    <string name="recent_searches_title">Recent searches</string>
+    <string name="clear_recent_searches">Clear recent searches</string>
+    <string name="recent_searches_hint">Your recent searches are only kept on this device.</string>
 </resources>

@@ -54,12 +54,22 @@ internal class SearchSection(
         fun resumeDownload(jobId: Long)
 
         fun retryPage()
+
+        /** Remembered queries, most recent first, or empty when there are none. */
+        fun recentSearches(): List<String>
+
+        /** Stores [query] as the most recent search. */
+        fun rememberSearch(query: String)
+
+        /** Forgets every remembered query. */
+        fun clearRecentSearches()
     }
 
     private lateinit var scrollView: ScrollView
     private lateinit var input: EditText
     private lateinit var searchButton: android.widget.Button
     private lateinit var resultsTitle: TextView
+    private lateinit var recentSearchesView: LinearLayout
     private lateinit var results: RecyclerView
     private val adapter = SearchResultAdapter(
         object : SearchResultAdapter.Callbacks {
@@ -130,11 +140,16 @@ internal class SearchSection(
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                 clearButton.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
+                renderRecentSearches()
             }
 
             override fun afterTextChanged(s: Editable?) {}
         })
         root.addView(searchBox, matchWidth())
+
+        recentSearchesView = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(recentSearchesView, matchWidth())
+        renderRecentSearches()
 
         searchButton = android.widget.Button(context).apply {
             text = context.getString(R.string.search_music)
@@ -188,6 +203,66 @@ internal class SearchSection(
         }
         searchButton.isEnabled = !screen.isSearching
         searchButton.alpha = if (screen.isSearching) 0.65f else 1f
+        renderRecentSearches()
+    }
+
+
+    /**
+     * Recent searches sit under the field while it is empty, and disappear the moment the user
+     * starts a query - they are a shortcut, not a second set of results.
+     */
+    private fun renderRecentSearches() {
+        if (!::recentSearchesView.isInitialized) return
+        recentSearchesView.removeAllViews()
+        if (input.text.isNotEmpty() || host.hasActiveQuery()) {
+            recentSearchesView.visibility = View.GONE
+            return
+        }
+        val entries = RecentSearches.normalize(host.recentSearches())
+        if (entries.isEmpty()) {
+            recentSearchesView.visibility = View.GONE
+            return
+        }
+        recentSearchesView.visibility = View.VISIBLE
+        val heading = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        heading.addView(
+            context.sectionTitle(context.getString(R.string.recent_searches_title)),
+            LinearLayout.LayoutParams(0, WRAP, 1f),
+        )
+        heading.addView(
+            context.iconButton(
+                iconRes = R.drawable.ic_close,
+                description = context.getString(R.string.clear_recent_searches),
+                tint = COLOR_MUTED,
+                sizeDp = 40,
+                insetDp = 10,
+            ) {
+                host.clearRecentSearches()
+                renderRecentSearches()
+            },
+            LinearLayout.LayoutParams(context.dp(40), context.dp(40)),
+        )
+        recentSearchesView.addView(heading, matchWidth())
+        entries.forEach { query ->
+            recentSearchesView.addView(
+                android.widget.Button(context).apply {
+                    text = query
+                    isAllCaps = false
+                    gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL
+                    minHeight = context.dp(48)
+                    context.styleActionButton(this, false)
+                    setOnClickListener { search(query) }
+                },
+                matchWidth(),
+            )
+        }
+        recentSearchesView.addView(
+            context.emptyMessage(context.getString(R.string.recent_searches_hint)),
+            matchWidth().apply { topMargin = context.dp(8) },
+        )
     }
 
     /** Fills the field and runs the query, as the home screen's shortcuts do. */
@@ -201,12 +276,14 @@ internal class SearchSection(
 
     fun search() {
         val query = input.text.toString()
+        if (query.isNotBlank()) host.rememberSearch(query)
         host.search(query)
     }
 
     fun clear() {
         input.text.clear()
         host.clearSearch()
+        renderRecentSearches()
     }
 
     /**

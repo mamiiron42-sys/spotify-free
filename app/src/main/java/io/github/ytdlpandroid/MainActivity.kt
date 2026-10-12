@@ -951,6 +951,37 @@ class MainActivity :
         }
 
         override fun retryPage() = onSearchRetryPage()
+
+        override fun recentSearches(): List<String> {
+            val stored = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                .getString(KEY_RECENT_SEARCHES, null)
+                ?: return emptyList()
+            // Stored as a JSON array because SharedPreferences only offers an unordered
+            // string set, and "most recent first" is the whole point of this list.
+            val parsed = runCatching {
+                val array = org.json.JSONArray(stored)
+                (0 until array.length()).mapNotNull { array.optString(it).takeIf(String::isNotEmpty) }
+            }.getOrDefault(emptyList())
+            return RecentSearches.normalize(parsed)
+        }
+
+        override fun rememberSearch(query: String) {
+            val trimmed = query.trim()
+            if (trimmed.isEmpty()) return
+            val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+            val existing = recentSearches()
+            val updated = RecentSearches.remember(existing, trimmed)
+            preferences.edit()
+                .putString(KEY_RECENT_SEARCHES, org.json.JSONArray(updated).toString())
+                .apply()
+        }
+
+        override fun clearRecentSearches() {
+            getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                .edit()
+                .remove(KEY_RECENT_SEARCHES)
+                .apply()
+        }
     }
 
     private val searchSection by lazy { SearchSection(this, searchHost) }
@@ -3005,6 +3036,7 @@ class MainActivity :
         /** How far the artwork colour is pushed toward the base black in the player gradient. */
         private const val PLAYER_GRADIENT_ART_BLEND = 0.42f
         private const val PREFERENCES = "downloader_preferences"
+        private const val KEY_RECENT_SEARCHES = "recent_searches"
         private const val KEY_FORMAT = "format_mode"
         private const val KEY_IMPORTED = "imported_audio_uris"
         private const val MAX_TRACK_ART_PIXELS = 640
